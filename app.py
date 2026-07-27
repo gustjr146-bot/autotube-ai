@@ -12,34 +12,42 @@ st.title("🎬 AutoTube Studio AI (통합형 마스터)")
 st.markdown("엑셀 업로드 한 번으로 대본, 이미지, 음성을 자동 생성하며 각 탭별 작업을 지원합니다.")
 
 # ==========================================
-# 2. API 연동 함수 정의 (Gemini 모델 자동 탐색 적용)
+# 2. API 연동 함수 정의 (Gemini 자동 탐색 적용)
 # ==========================================
 def call_gemini(prompt, api_key):
     if not api_key: return "Gemini 에러: API 키가 없습니다."
     api_key = api_key.strip()
     
-    # 구글 서버가 허용하는 모델 이름들을 순차적으로 모두 찔러봅니다!
-    models = [
-        "gemini-1.5-flash-latest", 
-        "gemini-1.5-flash", 
-        "gemini-pro",
-        "gemini-1.0-pro-latest"
-    ]
-    
-    last_error = ""
-    for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        try:
-            res = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
-            if res.status_code == 200:
-                return res.json()['candidates'][0]['content']['parts'][0]['text']
-            else:
-                last_error = f"{model} 거부됨"
-        except Exception:
-            last_error = "통신 에러"
+    try:
+        # [핵심 로직] 1. 구글 서버에 '현재 API 키로 쓸 수 있는 모델 목록'을 먼저 물어봅니다.
+        check_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        check_res = requests.get(check_url)
+        
+        if check_res.status_code != 200:
+            return f"Gemini 키/권한 거부 ({check_res.status_code}): {check_res.text[:150]}"
             
-    return f"Gemini 에러 (모든 모델 실패): {last_error}"
+        models_data = check_res.json()
+        # 텍스트 생성이 가능한 모델만 필터링
+        available_models = [m['name'] for m in models_data.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
+        
+        if not available_models:
+            return "Gemini 에러: 이 API 키로 대본을 생성할 수 있는 권한이 없습니다."
+        
+        # 1.5 flash 모델이 있으면 최우선으로 고르고, 없으면 허용된 첫 번째 모델을 자동으로 선택합니다.
+        target_model = next((m for m in available_models if '1.5-flash' in m), available_models[0])
+        
+        # 2. 찾아낸 최적의 모델로 대본 생성 요청
+        url = f"https://generativelanguage.googleapis.com/v1beta/{target_model}:generateContent?key={api_key}"
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        
+        res = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
+        if res.status_code == 200:
+            return res.json()['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"Gemini 생성 거부 ({res.status_code}): {res.text[:150]}"
+            
+    except Exception as e:
+        return f"Gemini 시스템 에러: {str(e)[:150]}"
 
 def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
     if not api_key: return "KIE 에러: API 키가 없습니다."
