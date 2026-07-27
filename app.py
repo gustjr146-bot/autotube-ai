@@ -12,10 +12,9 @@ st.title("🎬 AutoTube Studio AI (통합형 마스터)")
 st.markdown("엑셀 업로드 한 번으로 대본(Groq), 이미지, 음성을 자동 생성합니다.")
 
 # ==========================================
-# 2. API 연동 함수 정의 (구글 제거 -> Groq Llama3 도입)
+# 2. API 연동 함수 정의
 # ==========================================
 def call_groq(prompt, api_key):
-    """결제 오류가 잦은 구글 대신, 빠르고 무료인 Groq API를 사용합니다."""
     if not api_key: return "Groq 에러: API 키가 없습니다."
     api_key = api_key.strip()
     
@@ -25,7 +24,8 @@ def call_groq(prompt, api_key):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "llama3-70b-8192",  # 초고속 최신 AI 모델
+        # 단종된 모델 대신 가장 최신/최고 성능의 무료 모델로 이름 변경 완료!
+        "model": "llama-3.3-70b-versatile",  
         "messages": [
             {"role": "system", "content": "유튜브 쇼츠나 롱폼 대본을 재치있게 한국어로 작성해주는 전문 작가입니다."},
             {"role": "user", "content": prompt}
@@ -106,7 +106,6 @@ def call_fal_tts(script, api_key):
 with st.sidebar:
     st.header("🔑 API 키 설정")
     st.markdown("발급받으신 API 키를 입력해주세요.")
-    # Gemini 대신 Groq를 받도록 화면 수정
     GROQ_KEY = st.text_input("Groq API Key (대본용)", type="password", help="https://console.groq.com/keys 에서 무료 발급")
     KIE_KEY = st.text_input("KIE API Key", type="password")
     FAL_KEY = st.text_input("fal.ai API Key", type="password")
@@ -143,7 +142,6 @@ with tab1:
                 topic = str(row[topic_col]) if topic_col and pd.notna(row[topic_col]) else "랜덤 주제"
                 ref_image = str(row[ref_col]) if ref_col and pd.notna(row[ref_col]) else ""
                 
-                # 구글 대신 Groq(Llama3)로 대본 생성
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 img_url = call_kie_image(f"High quality, {topic}", ref_image, aspect_ratio, KIE_KEY)
                 test_script = f"주제는 {topic} 입니다." if "거부" in ai_script or "에러" in ai_script else ai_script
@@ -155,7 +153,6 @@ with tab1:
             status_text.success("🎉 작업 완료! (결과를 확인해주세요)")
             st.dataframe(pd.DataFrame(results))
 
-# ... (탭 2, 3, 4는 이전과 동일) ...
 with tab2: st.info("음원 생성 기능 연동")
 with tab3: st.info("AI 모션 연동")
 with tab4: st.info("영상 병합 연동")
