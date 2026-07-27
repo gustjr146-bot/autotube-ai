@@ -3,6 +3,9 @@ import pandas as pd
 import requests
 import json
 import time
+import os
+import urllib.request
+from moviepy.editor import ImageClip, AudioFileClip # 👈 이 줄이 추가되었습니다!
 
 # ==========================================
 # 1. 화면 기본 설정
@@ -155,4 +158,78 @@ with tab1:
 
 with tab2: st.info("음원 생성 기능 연동")
 with tab3: st.info("AI 모션 연동")
-with tab4: st.info("영상 병합 연동")
+# ----------------- TAB 4 -----------------
+with tab4:
+    st.subheader("📑 최종 영상(MP4) 자동 병합")
+    st.markdown("Tab 1에서 다운로드한 **'결과 엑셀(CSV)'** 파일을 업로드하면, 이미지와 음성을 합쳐 MP4 영상으로 만들어 드립니다.")
+    
+    file4 = st.file_uploader("완료된 결과 엑셀(CSV) 업로드", type=['csv'], key="f4")
+    
+    if file4:
+        df4 = pd.read_csv(file4)
+        st.success(f"✅ 총 {len(df4)}개의 영상 제작 대기열이 확인되었습니다.")
+        st.dataframe(df4.head(3))
+        
+        if st.button("🎬 MP4 동영상 렌더링 시작", type="primary", key="btn4"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # 영상을 저장할 임시 폴더 생성
+            if not os.path.exists("output_videos"):
+                os.makedirs("output_videos")
+                
+            for index, row in df4.iterrows():
+                topic = str(row.get('주제', f'video_{index}'))
+                img_url = str(row.get('이미지', ''))
+                audio_url = str(row.get('음성', ''))
+                
+                status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 영상 렌더링 중... ⏳**")
+                
+                # 에러가 나서 링크가 없는 경우는 건너뜁니다
+                if "http" not in img_url or "http" not in audio_url:
+                    st.warning(f"⚠️ '{topic}'은(는) 이미지나 음성 링크가 없어 건너뜁니다.")
+                    continue
+                    
+                try:
+                    # 1. 파일 임시 다운로드
+                    img_path = f"temp_img_{index}.png"
+                    audio_path = f"temp_audio_{index}.mp3"
+                    output_path = f"output_videos/result_{index}.mp4"
+                    
+                    urllib.request.urlretrieve(img_url, img_path)
+                    urllib.request.urlretrieve(audio_url, audio_path)
+                    
+                    # 2. MoviePy로 영상과 음성 합치기
+                    audio_clip = AudioFileClip(audio_path)
+                    # 음성 길이에 맞춰서 이미지를 띄워줍니다
+                    video_clip = ImageClip(img_path).set_duration(audio_clip.duration)
+                    video_clip = video_clip.set_audio(audio_clip)
+                    
+                    # 3. MP4 파일로 저장 (스트림릿 서버 성능상 약간의 시간이 걸립니다)
+                    video_clip.write_videofile(
+                        output_path, 
+                        fps=24, 
+                        codec="libx264", 
+                        audio_codec="aac",
+                        logger=None # 터미널 로그 숨김
+                    )
+                    
+                    # 4. 화면에 완성된 영상 띄워주기 및 다운로드 버튼 제공
+                    st.success(f"🎉 '{topic}' 영상 완성!")
+                    st.video(output_path)
+                    
+                    with open(output_path, "rb") as v_file:
+                        st.download_button(
+                            label=f"💾 '{topic}' MP4 다운로드",
+                            data=v_file,
+                            file_name=f"{topic}.mp4",
+                            mime="video/mp4",
+                            key=f"dl_{index}"
+                        )
+                        
+                except Exception as e:
+                    st.error(f"'{topic}' 병합 중 에러 발생: {e}")
+                
+                progress_bar.progress((index + 1) / len(df4))
+                
+            status_text.success("✅ 모든 동영상 렌더링 작업이 완료되었습니다!")
