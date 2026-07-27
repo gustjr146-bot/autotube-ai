@@ -51,9 +51,12 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
         
     try:
         create_res = requests.post(create_url, headers=headers, json=payload)
-        if create_res.status_code != 200: return f"KIE 서버 거부 ({create_res.status_code})"
+        # 💡 KIE 서버가 에러를 뱉으면 숨기지 않고 원문을 그대로 화면에 출력합니다!
+        if create_res.status_code != 200: 
+            return f"KIE 거부 ({create_res.status_code}): {create_res.text[:200]}"
+            
         data = create_res.json().get('data')
-        if not data: return "KIE 에러: 크레딧 부족 등"
+        if not data: return f"KIE 데이터 에러: {create_res.text[:100]}"
         task_id = data.get('taskId')
         
         for _ in range(12):
@@ -70,9 +73,9 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
                     except: res_json = {}
                 urls = res_json.get('resultUrls', [])
                 return urls[0] if urls else "KIE 이미지 생성됨 (URL 없음)"
-            elif state in ['failed', 'error']: return "KIE 이미지 생성 실패"
+            elif state in ['failed', 'error']: return "KIE 이미지 생성 실패 (내부 에러)"
         return "KIE 응답 시간 초과"
-    except Exception as e: return f"KIE 통신 에러: {str(e)[:50]}"
+    except Exception as e: return f"KIE 통신 에러: {str(e)[:100]}"
 
 def call_fal_tts(script, api_key):
     if not api_key: return "fal 에러: API 키가 없습니다."
@@ -98,7 +101,6 @@ def call_fal_tts(script, api_key):
 # 다운로드 권한 뚫기 (User-Agent 위조 함수)
 # ==========================================
 def download_file(url, save_path):
-    """로봇이 아닌 진짜 크롬 브라우저인 척 위장하여 파일을 강제 다운로드합니다."""
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
         out_file.write(response.read())
@@ -165,7 +167,6 @@ with tab2:
         st.success(f"✅ 총 {len(df2)}개의 음원 기획이 감지되었습니다.")
         st.dataframe(df2.head(3))
         if st.button("🎵 음원 생성 시작", type="primary", key="btn2"):
-            # 추후 실제 음악 생성 API(suno 등) 연동 자리입니다.
             st.info("API 연결 진행 중... (현재 버전에서는 테스트용 음성/이미지 반환 로직이 실행됩니다.)")
             for i, row in df2.iterrows():
                 st.write(f"- {i+1}번 트랙 대기열 등록 완료")
@@ -184,7 +185,7 @@ with tab3:
             else:
                 st.info("Rendi API와 연결하여 캐릭터 모션 렌더링을 시작합니다...")
 
-# ----------------- TAB 4 (통합 MP4 병합기 - 권한 우회 적용) -----------------
+# ----------------- TAB 4 (통합 MP4 병합기) -----------------
 with tab4:
     st.subheader("📑 최종 영상(MP4) 자동 병합 (쇼츠/롱폼/음원 모두 지원)")
     st.markdown("1번 탭에서 다운로드한 **'완성된 엑셀'**을 이곳에 업로드하면 그림과 소리를 1개의 비디오로 합쳐줍니다!")
@@ -218,7 +219,6 @@ with tab4:
                     audio_path = f"temp_audio_{index}.mp3"
                     output_path = f"output_videos/result_{index}.mp4"
                     
-                    # 💡 새로 추가된 다운로드 권한 우회 함수 사용!
                     download_file(img_url, img_path)
                     download_file(audio_url, audio_path)
                     
