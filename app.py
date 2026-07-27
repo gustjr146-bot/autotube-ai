@@ -12,11 +12,12 @@ st.title("🎬 AutoTube Studio AI (통합형)")
 st.markdown("엑셀 업로드 한 번으로 대본(Gemini) ➡️ 이미지(KIE) ➡️ 음성(fal)을 자동 생성합니다.")
 
 # ==========================================
-# 2. API 연동 함수 정의
+# 2. API 연동 함수 정의 (에러 방어 및 주소 수정)
 # ==========================================
 def call_gemini(prompt, api_key):
-    """Gemini API를 호출하여 대본/기획안 생성"""
-    if not api_key: return "Gemini API 키가 없습니다."
+    if not api_key: return "Gemini 에러: API 키가 없습니다."
+    api_key = api_key.strip()
+    # 404 에러 방지를 위해 가장 안정적인 모델 이름으로 원복
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
@@ -24,14 +25,13 @@ def call_gemini(prompt, api_key):
         res.raise_for_status()
         return res.json()['candidates'][0]['content']['parts'][0]['text']
     except requests.exceptions.RequestException as e:
-        err_msg = e.response.text if e.response else str(e)
-        return f"Gemini 에러: {err_msg}"
+        return f"Gemini 에러: {e.response.status_code if e.response else '연결 실패'} (키를 확인하세요)"
     except Exception as e:
         return f"Gemini 에러: {e}"
 
 def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
-    """KIE API를 호출하여 이미지 생성"""
-    if not api_key: return "KIE API 키가 없습니다."
+    if not api_key: return "KIE 에러: API 키가 없습니다."
+    api_key = api_key.strip()
     
     create_url = "https://api.kie.ai/api/v1/jobs/createTask"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -44,41 +44,50 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
         
     try:
         create_res = requests.post(create_url, headers=headers, json=payload)
-        create_res.raise_for_status()
-        task_id = create_res.json().get('data', {}).get('taskId')
+        resp_json = create_res.json()
+        
+        data = resp_json.get('data')
+        if not data:
+            return f"KIE 에러: {resp_json.get('message', 'API 키/크레딧 확인')}"
+            
+        task_id = data.get('taskId')
         
         for _ in range(12):
             time.sleep(5)
             poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers)
             poll_data = poll_res.json()
-            state = str(poll_data.get('data', {}).get('state', '')).lower()
+            poll_data_inner = poll_data.get('data')
+            
+            if not poll_data_inner:
+                return f"KIE 에러: 상태 조회 실패"
+                
+            state = str(poll_data_inner.get('state', '')).lower()
             
             if state in ['success', 'completed', 'done']:
-                result_json = poll_data['data']['resultJson']
+                result_json = poll_data_inner['data']['resultJson']
                 if isinstance(result_json, str):
                     result_json = json.loads(result_json)
                 return result_json['resultUrls'][0]
             elif state in ['failed', 'error']:
-                return f"KIE 생성 실패: {state}"
-        return "KIE 응답 시간 초과"
-    except requests.exceptions.RequestException as e:
-        err_msg = e.response.text if e.response else str(e)
-        return f"KIE 에러: {err_msg}"
+                return f"KIE 에러: 생성 실패"
+        return "KIE 에러: 응답 시간 초과"
     except Exception as e:
         return f"KIE 에러: {e}"
 
 def call_fal_tts(script, api_key):
-    """fal.ai API를 호출하여 음성(TTS) 생성"""
-    if not api_key: return "fal API 키가 없습니다."
+    if not api_key: return "fal 에러: API 키가 없습니다."
+    api_key = api_key.strip()
     
     url = "https://queue.fal.run/fal-ai/elevenlabs/tts/turbo-v2.5"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    # 대본이 너무 길거나 에러 메시지일 경우 대비
     safe_script = script[:500] if len(script) > 500 else script 
     payload = {"text": safe_script}
     
     try:
         create_res = requests.post(url, headers=headers, json=payload)
+        if create_res.status_code == 401:
+            return "fal 에러: 401 (API 키가 틀렸거나 권한이 없습니다!)"
+            
         create_res.raise_for_status()
         response_url = create_res.json().get('response_url')
         
@@ -89,10 +98,7 @@ def call_fal_tts(script, api_key):
                 audio_url = poll_res.json().get('audio', {}).get('url')
                 if audio_url:
                     return audio_url
-        return "fal TTS 응답 시간 초과"
-    except requests.exceptions.RequestException as e:
-        err_msg = e.response.text if e.response else str(e)
-        return f"fal 에러: {err_msg}"
+        return "fal 에러: 응답 시간 초과"
     except Exception as e:
         return f"fal 에러: {e}"
 
@@ -141,54 +147,54 @@ with tab1:
                 status_text = st.empty()
                 results = []
                 
-                # 엑셀의 정확한 컬럼명 찾기 (유연한 처리)
                 topic_col = next((c for c in df.columns if '주제' in c), None)
                 ref_col = next((c for c in df.columns if '레퍼런스' in c), None)
                 
                 for index, row in df.iterrows():
                     status_text.markdown(f"**작업 {index+1}/{len(df)} 진행 중...**")
                     
-                    # 데이터 추출
                     topic = str(row[topic_col]) if topic_col and pd.notna(row[topic_col]) else f"랜덤 {video_type} 주제"
                     ref_image = str(row[ref_col]) if ref_col and pd.notna(row[ref_col]) else ""
                     
-                    # 1. Gemini 기획/대본
-                    status_text.markdown(f"작업 {index+1}: ✍️ Gemini로 대본/프롬프트 작성 중...")
+                    # 1. Gemini
+                    status_text.markdown(f"작업 {index+1}: ✍️ Gemini로 대본 작성 중...")
                     script_prompt = f"다음 주제로 {video_type}용 유튜브 대본을 300자 이내로 작성해줘. 주제: {topic}"
                     ai_response = call_gemini(script_prompt, GEMINI_KEY)
                     
-                    # 2. KIE 이미지
+                    # 2. KIE
                     status_text.markdown(f"작업 {index+1}: 🎨 KIE로 이미지 렌더링 중...")
-                    img_prompt = f"High quality, cinematic, {topic}"
+                    # 대본 작성이 에러나면 주제로 대체
+                    safe_prompt = topic if "에러" in ai_response else ai_response[:100]
+                    img_prompt = f"High quality, cinematic, {safe_prompt}"
                     image_url = call_kie_image(img_prompt, ref_image, aspect_ratio, KIE_KEY)
                     
-                    # 3. fal 음성
+                    # 3. fal
                     status_text.markdown(f"작업 {index+1}: 🗣️ fal.ai로 음성(TTS) 생성 중...")
-                    audio_url = call_fal_tts(ai_response, FAL_KEY)
+                    # 대본이 에러면 음성 생성 생략
+                    if "에러" in ai_response:
+                        audio_url = "fal 에러: 대본 생성이 실패하여 음성을 만들 수 없습니다."
+                    else:
+                        audio_url = call_fal_tts(ai_response, FAL_KEY)
+                    
+                    # 상태 체크 확실하게 수정
+                    is_success = "에러" not in str(ai_response) and "에러" not in str(image_url) and "에러" not in str(audio_url)
                     
                     results.append({
                         "주제": topic,
                         "대본/기획": ai_response[:100] + "..." if len(ai_response) > 100 else ai_response,
                         "이미지 링크": image_url,
                         "음성 링크": audio_url,
-                        "상태": "✅ 성공" if "http" in image_url and "http" in audio_url else "❌ 일부 실패 (에러 메시지 확인)"
+                        "상태": "✅ 성공" if is_success else "❌ 실패"
                     })
                     
                     progress_bar.progress((index + 1) / len(df))
                 
                 status_text.success("🎉 모든 파이프라인 작업이 완료되었습니다!")
-                
-                # 결과 출력 및 다운로드
                 result_df = pd.DataFrame(results)
                 st.dataframe(result_df)
                 
                 csv = result_df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="💾 결과 엑셀 다운로드",
-                    data=csv,
-                    file_name='video_pipeline_results.csv',
-                    mime='text/csv',
-                )
+                st.download_button(label="💾 결과 엑셀 다운로드", data=csv, file_name='video_pipeline_results.csv', mime='text/csv')
 
 with tab2:
     st.subheader("🎵 음원 + 영상 번들 제작")
