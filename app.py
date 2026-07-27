@@ -12,23 +12,34 @@ st.title("🎬 AutoTube Studio AI (통합형 마스터)")
 st.markdown("엑셀 업로드 한 번으로 대본, 이미지, 음성을 자동 생성하며 각 탭별 작업을 지원합니다.")
 
 # ==========================================
-# 2. API 연동 함수 정의
+# 2. API 연동 함수 정의 (Gemini 모델 자동 탐색 적용)
 # ==========================================
 def call_gemini(prompt, api_key):
     if not api_key: return "Gemini 에러: API 키가 없습니다."
     api_key = api_key.strip()
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    try:
-        res = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
-        if res.status_code == 200:
-            return res.json()['candidates'][0]['content']['parts'][0]['text']
-        else:
-            # 구글 서버가 보내는 진짜 에러 메시지를 숨기지 않고 바로 출력합니다!
-            return f"Gemini 거부 ({res.status_code}): {res.text[:250]}"
-    except Exception as e:
-        return f"Gemini 통신 에러: {str(e)[:250]}"
+    # 구글 서버가 허용하는 모델 이름들을 순차적으로 모두 찔러봅니다!
+    models = [
+        "gemini-1.5-flash-latest", 
+        "gemini-1.5-flash", 
+        "gemini-pro",
+        "gemini-1.0-pro-latest"
+    ]
+    
+    last_error = ""
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        try:
+            res = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
+            if res.status_code == 200:
+                return res.json()['candidates'][0]['content']['parts'][0]['text']
+            else:
+                last_error = f"{model} 거부됨"
+        except Exception:
+            last_error = "통신 에러"
+            
+    return f"Gemini 에러 (모든 모델 실패): {last_error}"
 
 def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
     if not api_key: return "KIE 에러: API 키가 없습니다."
@@ -149,7 +160,7 @@ with tab1:
                 results.append({"주제": topic, "대본": ai_script[:150], "이미지": img_url, "음성": aud_url})
                 progress_bar.progress((index + 1) / len(df1))
                 
-            status_text.success("🎉 작업 완료! (에러가 있다면 메시지를 확인해주세요)")
+            status_text.success("🎉 작업 완료! (결과를 확인해주세요)")
             st.dataframe(pd.DataFrame(results))
 
 # ----------------- TAB 2 -----------------
