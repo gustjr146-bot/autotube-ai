@@ -12,24 +12,23 @@ st.title("🎬 AutoTube Studio AI (통합형 마스터)")
 st.markdown("엑셀 업로드 한 번으로 대본, 이미지, 음성을 자동 생성하며 각 탭별 작업을 지원합니다.")
 
 # ==========================================
-# 2. API 연동 함수 정의 (에러 자동 우회 적용)
+# 2. API 연동 함수 정의
 # ==========================================
 def call_gemini(prompt, api_key):
     if not api_key: return "Gemini 에러: API 키가 없습니다."
     api_key = api_key.strip()
     
-    # 404 에러 발생 시 다른 모델로 자동 우회하여 시도
-    models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
-    for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        try:
-            res = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
-            if res.status_code == 200:
-                return res.json()['candidates'][0]['content']['parts'][0]['text']
-        except:
-            continue
-    return "Gemini 에러: 사용 가능한 모델을 찾지 못했거나 키 오류입니다."
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    try:
+        res = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
+        if res.status_code == 200:
+            return res.json()['candidates'][0]['content']['parts'][0]['text']
+        else:
+            # 구글 서버가 보내는 진짜 에러 메시지를 숨기지 않고 바로 출력합니다!
+            return f"Gemini 거부 ({res.status_code}): {res.text[:250]}"
+    except Exception as e:
+        return f"Gemini 통신 에러: {str(e)[:250]}"
 
 def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
     if not api_key: return "KIE 에러: API 키가 없습니다."
@@ -62,7 +61,6 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
             
             state = str(poll_data_inner.get('state', '')).lower()
             if state in ['success', 'completed', 'done']:
-                # 에러 원인이었던 data 구조 깊이 문제 해결
                 res_json = poll_data_inner.get('resultJson', '{}')
                 if isinstance(res_json, str):
                     try: res_json = json.loads(res_json)
@@ -143,12 +141,15 @@ with tab1:
                 
                 ai_script = call_gemini(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GEMINI_KEY)
                 img_url = call_kie_image(f"High quality, {topic}", ref_image, aspect_ratio, KIE_KEY)
-                aud_url = call_fal_tts(ai_script if "에러" not in ai_script else f"{topic} 테스트 음성", FAL_KEY)
                 
-                results.append({"주제": topic, "대본": ai_script[:100], "이미지": img_url, "음성": aud_url})
+                # 대본이 실패하더라도 음성 테스트를 위해 임시 텍스트 전달
+                test_script = f"주제는 {topic} 입니다." if "거부" in ai_script or "에러" in ai_script else ai_script
+                aud_url = call_fal_tts(test_script, FAL_KEY)
+                
+                results.append({"주제": topic, "대본": ai_script[:150], "이미지": img_url, "음성": aud_url})
                 progress_bar.progress((index + 1) / len(df1))
                 
-            status_text.success("🎉 작업 완료!")
+            status_text.success("🎉 작업 완료! (에러가 있다면 메시지를 확인해주세요)")
             st.dataframe(pd.DataFrame(results))
 
 # ----------------- TAB 2 -----------------
@@ -161,7 +162,6 @@ with tab2:
         st.dataframe(df2.head(3))
         if st.button("🎵 음원 생성 시작", type="primary", key="btn2"):
             st.info("API 연결 진행 중... (현재 버전에서는 테스트용 음성/이미지 반환 로직이 실행됩니다.)")
-            # 추후 실제 음악 생성 API(suno 등) 연결 자리
             for i, row in df2.iterrows():
                 st.write(f"- {i+1}번 트랙 생성 완료 (시뮬레이션)")
 
