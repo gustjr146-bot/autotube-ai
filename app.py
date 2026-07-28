@@ -9,7 +9,6 @@ import math
 import numpy as np
 from urllib.parse import urlparse
 
-# 💡 최신 버전 충돌(ANTIALIAS 에러)을 완벽하게 해결하는 강제 호환성 패치!
 import PIL
 from PIL import Image, ImageDraw, ImageFont
 if not hasattr(PIL.Image, 'ANTIALIAS'):
@@ -21,13 +20,13 @@ from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, CompositeVid
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (통합형 마스터)")
-st.markdown("대본, 동영상, 음성, 모션 생성부터 **자동 한글 자막이 포함된 MP4 최종 병합**까지 모두 지원합니다.")
+st.title("🎬 AutoTube Studio AI (다이내믹 자막 + 모션 적용)")
+st.markdown("대본, 동영상, 음성 생성부터 **쇼츠 스타일 다이내믹 자막이 포함된 MP4 최종 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
     try:
-        urllib.request.urlretrieve("https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf", FONT_PATH)
+        urllib.request.urlretrieve("https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf", FONT_PATH)
     except Exception: pass 
 
 # ==========================================
@@ -41,7 +40,7 @@ def call_groq(prompt, api_key):
     payload = {
         "model": "llama-3.3-70b-versatile",  
         "messages": [
-            {"role": "system", "content": "당신은 한국어 유튜브 전문 작가입니다. 대본 본문만 1~2문단으로 짧고 명확하게 작성해 주세요."},
+            {"role": "system", "content": "당신은 한국어 유튜브 전문 작가입니다. 대본 본문만 짧고 명확하게 작성해 주세요."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -146,41 +145,60 @@ def download_file(url, save_path):
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
         out_file.write(response.read())
 
-def create_subtitle_clip(text, video_width, duration):
+# 💡 [핵심] 쇼츠 스타일 다이내믹 동기화 자막 생성기 (절대 잘리지 않음!)
+def create_dynamic_subtitles(text, video_width, video_height, duration):
     try:
-        img = Image.new('RGBA', (video_width, 250), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        try: font = ImageFont.truetype(FONT_PATH, 45)
+        # 대본을 18글자 내외의 청크(조각)로 분할
+        words = text.replace('\n', ' ').split()
+        chunks = []
+        curr = ""
+        for w in words:
+            if len(curr) + len(w) < 18:
+                curr += w + " "
+            else:
+                chunks.append(curr.strip())
+                curr = w + " "
+        if curr: chunks.append(curr.strip())
+            
+        clips = []
+        total_chars = sum(len(c) for c in chunks)
+        if total_chars == 0: return []
+        
+        start_time = 0
+        try: font = ImageFont.truetype(FONT_PATH, 55) # 폰트 크기 확대
         except Exception: font = ImageFont.load_default()
         
-        words = text.replace('\n', ' ').split()
-        lines = []
-        current_line = ""
-        for word in words:
-            if len(current_line) + len(word) <= 22:
-                current_line += word + " "
+        for chunk in chunks:
+            chunk_duration = duration * (len(chunk) / total_chars)
+            
+            img = Image.new('RGBA', (video_width, 200), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            
+            if hasattr(font, 'getbbox'):
+                bbox = font.getbbox(chunk)
+                w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             else:
-                lines.append(current_line.strip())
-                current_line = word + " "
-        if current_line: lines.append(current_line.strip())
-        if len(lines) > 2:
-            lines = lines[:2]
-            lines[1] += "..."
+                w, h = draw.textsize(chunk, font=font)
             
-        y_text = 20
-        for line in lines:
-            bbox = font.getbbox(line)
-            w = bbox[2] - bbox[0]
-            h = bbox[3] - bbox[1]
-            draw.rectangle(((video_width - w) / 2 - 20, y_text - 5, (video_width + w) / 2 + 20, y_text + h + 15), fill=(0, 0, 0, 180))
-            draw.text(((video_width - w) / 2, y_text), line, font=font, fill=(255, 255, 255, 255))
-            y_text += h + 25
+            x_pos = (video_width - w) / 2
+            y_pos = 50
             
-        img_np = np.array(img)
-        return ImageClip(img_np).set_duration(duration)
+            # 자막 배경 검은색 반투명 박스
+            draw.rectangle((x_pos - 20, y_pos - 15, x_pos + w + 20, y_pos + h + 25), fill=(0, 0, 0, 180))
+            # 자막 텍스트
+            draw.text((x_pos, y_pos), chunk, font=font, fill=(255, 255, 255, 255))
+            
+            img_np = np.array(img)
+            txt_clip = ImageClip(img_np).set_duration(chunk_duration).set_start(start_time)
+            txt_clip = txt_clip.set_position(('center', video_height - 350)) # 화면 하단 안전한 위치에 배치
+            clips.append(txt_clip)
+            
+            start_time += chunk_duration
+            
+        return clips
     except Exception as e:
         print(f"자막 에러: {e}")
-        return None
+        return []
 
 # ==========================================
 # 3. 사이드바 
@@ -253,14 +271,13 @@ with tab3:
     if file3 and st.button("💃 모션 변환 시작", type="primary"): st.info("렌더링 시작...")
 
 with tab4:
-    st.subheader("📑 최종 영상(MP4) 자동 병합 (한글 자막 추가)")
-    st.markdown("비디오 크레딧이 부족해 사진이 생성되었더라도, **마법의 줌인(Zoom-in) 효과**로 동영상처럼 움직이게 만들어줍니다!")
+    st.subheader("📑 최종 영상(MP4) 자동 병합 (쇼츠형 다이내믹 자막 추가)")
+    st.markdown("비디오 대신 사진이 생성되었더라도, **영화 같은 스캔(Pan & Scan) 애니메이션**으로 생동감 있게 움직입니다!")
     
     file4 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f4")
     
     if file4:
         df4 = pd.read_csv(file4)
-        st.dataframe(df4.head(3))
         
         if st.button("🎬 자막 포함 동영상 렌더링 시작", type="primary"):
             progress_bar = st.progress(0)
@@ -309,19 +326,25 @@ with tab4:
                         w, h = w - w % 2, h - h % 2
                         base_clip = base_clip.resize(newsize=(w, h))
                         
-                        # 💡 오류가 해결되어, 이제 이 코드가 사진을 동영상처럼 서서히 확대(줌인) 시켜줍니다!
-                        def zoom(t): return 1.0 + 0.05 * (t / audio_clip.duration)
-                        zoomed_clip = base_clip.resize(zoom).set_position(('center', 'center'))
-                        video_clip = CompositeVideoClip([zoomed_clip], size=(w, h)).set_duration(audio_clip.duration)
+                        # 💡 [핵심] 사진을 동영상처럼 확실하게 움직이게 하는 Pan & Scan 모션!
+                        # 이미지를 15% 확대한 뒤, 위에서 아래로 부드럽게 훑고 내려갑니다.
+                        enlarged_clip = base_clip.resize(1.15)
+                        
+                        def fl_pos(t):
+                            y_max = enlarged_clip.h - h
+                            y_curr = -int(y_max * (t / audio_clip.duration))
+                            return ('center', y_curr)
+                            
+                        animated_clip = enlarged_clip.set_position(fl_pos)
+                        video_clip = CompositeVideoClip([animated_clip], size=(w, h)).set_duration(audio_clip.duration)
                         
                     video_clip = video_clip.set_audio(audio_clip)
                     
-                    display_text = script_text[:80] if len(script_text) > 80 else script_text
-                    subtitle_clip = create_subtitle_clip(display_text, video_clip.w, video_clip.duration)
+                    # 💡 다이내믹 쇼츠 자막 추가 (음성에 맞춰 순차적으로 등장)
+                    subtitle_clips = create_dynamic_subtitles(script_text, video_clip.w, video_clip.h, video_clip.duration)
                     
-                    if subtitle_clip:
-                        subtitle_clip = subtitle_clip.set_position(('center', video_clip.h - 250))
-                        final_clip = CompositeVideoClip([video_clip, subtitle_clip])
+                    if subtitle_clips:
+                        final_clip = CompositeVideoClip([video_clip] + subtitle_clips)
                     else:
                         final_clip = video_clip
                     
