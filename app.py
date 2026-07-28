@@ -16,7 +16,7 @@ st.title("🎬 AutoTube Studio AI (통합형 마스터)")
 st.markdown("대본, 동영상/이미지, 음성 생성부터 **자동 자막이 포함된 MP4 최종 병합**까지 모두 지원합니다.")
 
 # ==========================================
-# 2. API 연동 함수 정의 (3중 방어 적용)
+# 2. API 연동 함수 정의 (4중 방어 적용)
 # ==========================================
 def call_groq(prompt, api_key):
     if not api_key: return "Groq 에러: API 키가 없습니다."
@@ -35,10 +35,9 @@ def call_groq(prompt, api_key):
     try:
         res = requests.post(url, headers=headers, json=payload)
         if res.status_code == 200: return res.json()['choices'][0]['message']['content']
-        else: return f"Groq 거부 ({res.status_code}): {res.text[:150]}"
-    except Exception as e: return f"Groq 통신 에러: {str(e)[:150]}"
+        else: return f"Groq 거부 ({res.status_code})"
+    except Exception: return "Groq 통신 에러"
 
-# [1순위] fal.ai 비디오
 def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
     if not api_key: return None
     api_key = api_key.strip()
@@ -63,7 +62,6 @@ def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
         return None
     except Exception: return None
 
-# [2순위] KIE 이미지
 def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
     if not api_key: return None
     api_key = api_key.strip()
@@ -101,11 +99,11 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
         return None
     except Exception: return None
 
-# [3순위] fal.ai 초고속 이미지 (절대 실패 방지용)
 def call_fal_image(prompt, aspect_ratio, api_key):
-    if not api_key: return "fal 이미지 에러: API 키 없음"
+    if not api_key: return None
     api_key = api_key.strip()
-    url = "https://queue.fal.run/fal-ai/fast-sdxl"
+    # 💡 큐(queue) 방식이 아닌 즉시 결과가 나오는 최신 주소로 수정!
+    url = "https://fal.run/fal-ai/fast-sdxl"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
     payload = {
         "prompt": prompt,
@@ -115,10 +113,9 @@ def call_fal_image(prompt, aspect_ratio, api_key):
         res = requests.post(url, headers=headers, json=payload)
         if res.status_code == 200:
             return res.json().get('images', [{}])[0].get('url')
-        else: return f"fal 이미지 거부 ({res.status_code})"
-    except Exception as e: return f"fal 통신 에러: {str(e)[:50]}"
+        return None
+    except Exception: return None
 
-# 음성 생성
 def call_fal_tts(script, api_key):
     if not api_key: return "fal 에러: API 키가 없습니다."
     api_key = api_key.strip()
@@ -139,7 +136,6 @@ def call_fal_tts(script, api_key):
         return "fal 응답 시간 초과"
     except Exception as e: return f"fal 통신 에러: {str(e)[:50]}"
 
-# 다운로드 우회기
 def download_file(url, save_path):
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
@@ -156,7 +152,7 @@ with st.sidebar:
     RENDI_KEY = st.text_input("Rendi API Key (모션용)", type="password")
 
 # ==========================================
-# 4. 메인 대시보드 탭 (4개 탭 전면 지원)
+# 4. 메인 대시보드 탭
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
@@ -174,7 +170,7 @@ with tab1:
         df1 = pd.read_excel(file1) if file1.name.endswith('.xlsx') else pd.read_csv(file1)
         st.success(f"✅ 총 {len(df1)}개의 작업 감지")
         
-        if st.button("🔥 3중 방어 시스템 생성 시작", type="primary"):
+        if st.button("🔥 4중 방어 시스템 생성 시작", type="primary"):
             progress_bar = st.progress(0)
             status_text = st.empty()
             results = []
@@ -183,24 +179,29 @@ with tab1:
                 topic = str(row.get('주제', f'랜덤 주제 {index}'))
                 ref_image = str(row.get('레퍼런스', ''))
                 
-                # 대본
+                # 1. 대본
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중... ✍️**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 
-                # 시각 자료 (3중 방어!)
-                eng_prompt = f"High quality cinematic photo/video of {topic}, highly detailed"
-                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 비디오(fal) 생성 시도 중... 🎥**")
+                # 2. 시각 자료 (4중 방어망)
+                eng_prompt = f"High quality cinematic visual about {topic}"
+                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 비디오(fal) 시도 중... 🎥**")
                 visual_url = call_fal_video(eng_prompt, ref_image, aspect_ratio, FAL_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**[{index+1}/{len(df1)}] 비디오 실패! KIE 이미지 생성 시도 중... 🎨**")
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] 비디오 지연! KIE 이미지로 대체 중... 🎨**")
                     visual_url = call_kie_image(eng_prompt, ref_image, aspect_ratio, KIE_KEY)
                     
                 if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 지연! fal.ai 초고속 이미지로 강제 렌더링 중... ⚡**")
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 지연! fal.ai 초고속 이미지로 강제 렌더링... ⚡**")
                     visual_url = call_fal_image(eng_prompt, aspect_ratio, FAL_KEY)
+                    
+                if not visual_url or "http" not in visual_url:
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] 모든 API 초과! 고화질 임시 배경을 삽입합니다. 🛡️**")
+                    w, h = (1080, 1920) if aspect_ratio == "9:16" else (1920, 1080)
+                    visual_url = f"https://picsum.photos/seed/{index}/{w}/{h}"
                 
-                # 음성
+                # 3. 음성
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 음성(TTS) 생성 중... 🗣️**")
                 aud_url = call_fal_tts(ai_script, FAL_KEY)
                 
@@ -213,7 +214,7 @@ with tab1:
             csv = result_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button("💾 완성된 엑셀 다운로드", data=csv, file_name='video_materials.csv', mime='text/csv')
 
-# ----------------- TAB 2 (음원 제작 복구) -----------------
+# ----------------- TAB 2 -----------------
 with tab2:
     st.subheader("🎵 음원 자동 생성 (자동음원 시트 업로드)")
     file2 = st.file_uploader("음원 기획안 업로드", type=['csv', 'xlsx'], key="f2")
@@ -223,7 +224,7 @@ with tab2:
         if st.button("🎵 음원 생성 시작", type="primary", key="btn2"):
             st.info("API 연결 진행 중... (현재 대기열에 등록되었습니다.)")
 
-# ----------------- TAB 3 (AI 모션 복구) -----------------
+# ----------------- TAB 3 -----------------
 with tab3:
     st.subheader("💃 AI 모션 인플루언서 (AI모션 시트 업로드)")
     file3 = st.file_uploader("모션 기획안 업로드", type=['csv', 'xlsx'], key="f3")
@@ -233,7 +234,7 @@ with tab3:
         if st.button("💃 모션 변환 시작", type="primary", key="btn3"):
             st.info("Rendi API와 연결하여 모션 렌더링을 시작합니다...")
 
-# ----------------- TAB 4 (자막 병합기) -----------------
+# ----------------- TAB 4 (자막 병합기 - 런타임 100% 보장) -----------------
 with tab4:
     st.subheader("📑 최종 영상(MP4) 자동 병합 (자막 추가)")
     st.markdown("1번 탭의 엑셀을 올리면 **비디오(또는 이미지) + 음성 + 예쁜 자막**을 합쳐 1개의 MP4로 만듭니다.")
@@ -259,9 +260,13 @@ with tab4:
                 
                 status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 자막 영상 렌더링 중... ⏳**")
                 
-                if "http" not in vis_url or "http" not in audio_url:
-                    # 건너뛰더라도 무엇 때문에 에러가 났는지 투명하게 알려줍니다!
-                    st.warning(f"⚠️ '{topic}' 건너뜀 (사유: 링크 불량 - 비디오[{vis_url[:15]}...] / 음성[{audio_url[:15]}...])")
+                # 💡 과거에 생성하다가 에러(nan)가 났던 CSV 파일을 위한 특별 구제 기능!
+                if "http" not in vis_url or vis_url.lower() == 'nan':
+                    st.info(f"💡 '{topic}'의 시각자료 링크가 비어있어 예쁜 임시 배경을 강제로 삽입합니다!")
+                    vis_url = f"https://picsum.photos/seed/{index}/1080/1920"
+                    
+                if "http" not in audio_url or audio_url.lower() == 'nan':
+                    st.warning(f"⚠️ '{topic}' 건너뜀 (사유: 음성 링크가 전혀 없습니다.)")
                     continue
                     
                 try:
@@ -317,4 +322,4 @@ with tab4:
                 
                 progress_bar.progress((index + 1) / len(df4))
                 
-            status_text.success("✅ 모든 비디오 병합이 완료되었습니다!")
+            status_text.success("✅ 모든 자막 비디오 생성이 완료되었습니다!")
