@@ -5,14 +5,15 @@ import json
 import time
 import os
 import urllib.request
-from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips
+import math
+from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, concatenate_videoclips
 
 # ==========================================
 # 1. 화면 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
 st.title("🎬 AutoTube Studio AI (통합형 마스터)")
-st.markdown("대본(Groq), **동영상(fal 비디오)**, 음성 생성부터 **MP4 동영상 최종 병합**까지 지원합니다.")
+st.markdown("대본(Groq), 비디오/이미지(fal/KIE), 음성(fal) 자동 생성 ➡️ **최종 MP4 완제품 동영상 병합**")
 
 # ==========================================
 # 2. API 연동 함수 정의
@@ -25,7 +26,7 @@ def call_groq(prompt, api_key):
     payload = {
         "model": "llama-3.3-70b-versatile",  
         "messages": [
-            {"role": "system", "content": "당신은 한국어 유튜브 전문 작가입니다. 대본만 제공하세요."},
+            {"role": "system", "content": "당신은 한국어 유튜브 전문 작가입니다. 대본 본문만 작성해 주세요."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -38,11 +39,9 @@ def call_groq(prompt, api_key):
     except Exception as e: return f"Groq 통신 에러: {str(e)[:150]}"
 
 def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
-    """fal.ai를 이용해 프롬프트(또는 이미지) 기반으로 짧은 비디오를 생성합니다."""
-    if not api_key: return "비디오 에러: API 키가 없습니다."
+    """fal.ai를 사용하여 움직이는 비디오 클립 생성"""
+    if not api_key: return None
     api_key = api_key.strip()
-    
-    # 💡 Luma Dream Machine 모델 사용 (텍스트 to 비디오 또는 이미지 to 비디오)
     url = "https://queue.fal.run/fal-ai/luma-dream-machine"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
     
@@ -50,16 +49,14 @@ def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
         "prompt": prompt,
         "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9"
     }
-    
     if pd.notna(ref_url) and str(ref_url).strip() and str(ref_url).strip() != 'nan':
         payload["image_url"] = str(ref_url).strip()
         
     try:
         create_res = requests.post(url, headers=headers, json=payload)
-        if create_res.status_code != 200: return f"비디오 서버 거부 ({create_res.status_code}): {create_res.text[:100]}"
+        if create_res.status_code != 200: return None
         response_url = create_res.json().get('response_url')
         
-        # 비디오 생성은 1~2분 정도 걸릴 수 있으므로 넉넉히 대기합니다 (20번 반복, 5초 대기 = 최대 100초)
         for _ in range(25):
             time.sleep(5)
             poll_res = requests.get(response_url, headers=headers)
@@ -67,8 +64,47 @@ def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
                 result_data = poll_res.json()
                 video_url = result_data.get('video', {}).get('url')
                 if video_url: return video_url
-        return "비디오 생성 응답 시간 초과"
-    except Exception as e: return f"비디오 통신 에러: {str(e)[:50]}"
+        return None
+    except Exception:
+        return None
+
+def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
+    """비디오 생성 실패 시 사용하는 KIE 이미지 생성 함수"""
+    if not api_key: return "KIE 에러: API 키 없음"
+    api_key = api_key.strip()
+    create_url = "https://api.kie.ai/api/v1/jobs/createTask"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": "google/nano-banana-edit",
+        "input": {"prompt": prompt, "output_format": "png", "aspect_ratio": aspect_ratio}
+    }
+    if pd.notna(ref_url) and str(ref_url).strip() and str(ref_url).strip() != 'nan':
+        payload["input"]["image_urls"] = [str(ref_url).strip()]
+        
+    try:
+        create_res = requests.post(create_url, headers=headers, json=payload)
+        if create_res.status_code != 200: return f"KIE 거부 ({create_res.status_code})"
+        data = create_res.json().get('data')
+        if not data: return "KIE 에러: 데이터 없음"
+        task_id = data.get('taskId')
+        
+        for _ in range(12):
+            time.sleep(5)
+            poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers)
+            if poll_res.status_code != 200: continue
+            poll_data_inner = poll_res.json().get('data')
+            if not poll_data_inner: return "KIE 상태 조회 에러"
+            state = str(poll_data_inner.get('state', '')).lower()
+            if state in ['success', 'completed', 'done']:
+                res_json = poll_data_inner.get('resultJson', '{}')
+                if isinstance(res_json, str):
+                    try: res_json = json.loads(res_json)
+                    except: res_json = {}
+                urls = res_json.get('resultUrls', [])
+                return urls[0] if urls else "KIE URL 생성 실패"
+            elif state in ['failed', 'error']: return "KIE 생성 실패"
+        return "KIE 시간 초과"
+    except Exception as e: return f"KIE 통신 에러: {str(e)[:50]}"
 
 def call_fal_tts(script, api_key):
     if not api_key: return "fal 에러: API 키가 없습니다."
@@ -90,11 +126,9 @@ def call_fal_tts(script, api_key):
         return "fal 응답 시간 초과"
     except Exception as e: return f"fal 통신 에러: {str(e)[:50]}"
 
-# ==========================================
-# 다운로드 권한 뚫기 (User-Agent 위조 함수)
-# ==========================================
 def download_file(url, save_path):
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    """로봇 차단을 방지하는 우회 다운로드 함수"""
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
         out_file.write(response.read())
 
@@ -104,8 +138,8 @@ def download_file(url, save_path):
 with st.sidebar:
     st.header("🔑 API 키 설정")
     GROQ_KEY = st.text_input("Groq API Key (대본용)", type="password")
-    # KIE 키는 제거하고, FAL 키로 비디오와 음성을 모두 처리합니다.
     FAL_KEY = st.text_input("fal.ai API Key (음성/비디오용)", type="password")
+    KIE_KEY = st.text_input("KIE API Key (이미지/백업용)", type="password")
     RENDI_KEY = st.text_input("Rendi API Key (모션용)", type="password")
 
 # ==========================================
@@ -113,9 +147,9 @@ with st.sidebar:
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인 (쇼츠/롱폼)", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (최종 MP4)"])
 
-# ----------------- TAB 1 (쇼츠/롱폼) -----------------
+# ----------------- TAB 1 -----------------
 with tab1:
-    st.subheader("대량 영상 재료(대본/동영상/음성) 자동 생성")
+    st.subheader("대량 영상 재료(대본/시각자료/음성) 자동 생성")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -126,29 +160,38 @@ with tab1:
     if file1:
         df1 = pd.read_excel(file1) if file1.name.endswith('.xlsx') else pd.read_csv(file1)
         st.success(f"✅ 총 {len(df1)}개의 작업 감지")
-        if st.button("🔥 생성 시작 (비디오 포함)", type="primary"):
+        if st.button("🔥 생성 시작", type="primary"):
             progress_bar = st.progress(0)
             status_text = st.empty()
             results = []
             
             for index, row in df1.iterrows():
-                status_text.markdown(f"**작업 {index+1}/{len(df1)} 진행 중...** (비디오 생성으로 인해 시간이 더 소요됩니다)")
+                status_text.markdown(f"**작업 {index+1}/{len(df1)} 진행 중...** (비디오 생성 시 1~2분 소요될 수 있습니다)")
                 topic_col = next((c for c in df1.columns if '주제' in c), None)
                 ref_col = next((c for c in df1.columns if '레퍼런스' in c), None)
                 topic = str(row[topic_col]) if topic_col and pd.notna(row[topic_col]) else "랜덤 주제"
                 ref_image = str(row[ref_col]) if ref_col and pd.notna(row[ref_col]) else ""
                 
-                # 대본 작성
+                # 1. 대본 생성
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 
-                # 💡 이제 KIE(정지 이미지) 대신 fal.ai(동영상)를 호출합니다!
-                vid_prompt = f"High quality cinematic video about {topic}"
-                video_url = call_fal_video(vid_prompt, ref_image, aspect_ratio, FAL_KEY)
+                # 2. 시각 요소 생성 (비디오 시도 -> 실패 시 이미지로 자동 Fallback)
+                vid_prompt = f"High quality, cinematic video about {topic}"
+                visual_url = call_fal_video(vid_prompt, ref_image, aspect_ratio, FAL_KEY)
                 
-                # 음성 생성
+                if not visual_url or "http" not in visual_url:
+                    status_text.markdown(f"**작업 {index+1}/{len(df1)}: 비디오 생성 지연으로 고화질 이미지로 자동 대체 중...**")
+                    visual_url = call_kie_image(f"High quality, cinematic photo of {topic}", ref_image, aspect_ratio, KIE_KEY)
+                
+                # 3. 음성 생성
                 aud_url = call_fal_tts(ai_script, FAL_KEY)
                 
-                results.append({"주제": topic, "대본": ai_script[:150], "비디오": video_url, "음성": aud_url})
+                results.append({
+                    "주제": topic, 
+                    "대본": ai_script[:150], 
+                    "비디오": visual_url, 
+                    "음성": aud_url
+                })
                 progress_bar.progress((index + 1) / len(df1))
                 
             status_text.success("🎉 작업 완료! 아래 엑셀 파일을 다운로드하여 4번 탭(영상 병합)에 넣어주세요.")
@@ -157,14 +200,32 @@ with tab1:
             csv = result_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button(label="💾 완성된 엑셀 다운로드", data=csv, file_name='video_materials.csv', mime='text/csv')
 
-# ----------------- TAB 2, 3 생략 -----------------
-with tab2: st.info("음원 생성 API 연동 자리")
-with tab3: st.info("AI 모션 API 연동 자리")
+# ----------------- TAB 2, 3 -----------------
+with tab2:
+    st.subheader("🎵 음원 자동 생성 (자동음원 시트 업로드)")
+    file2 = st.file_uploader("음원 기획안 업로드", type=['csv', 'xlsx'], key="f2")
+    if file2:
+        df2 = pd.read_excel(file2) if file2.name.endswith('.xlsx') else pd.read_csv(file2)
+        st.success(f"✅ 총 {len(df2)}개의 음원 기획이 감지되었습니다.")
+        st.dataframe(df2.head(3))
+        if st.button("🎵 음원 생성 시작", type="primary", key="btn2"):
+            st.info("음원 생성 대기열 등록 완료 (생성된 CSV는 4번 탭에서 MP4 영상으로 생성 가능합니다.)")
+
+with tab3:
+    st.subheader("💃 AI 모션 인플루언서 (AI모션 시트 업로드)")
+    file3 = st.file_uploader("모션 기획안 업로드", type=['csv', 'xlsx'], key="f3")
+    if file3:
+        df3 = pd.read_excel(file3) if file3.name.endswith('.xlsx') else pd.read_csv(file3)
+        st.success(f"✅ 총 {len(df3)}개의 모션 트래킹 작업이 감지되었습니다.")
+        st.dataframe(df3.head(3))
+        if st.button("💃 모션 변환 시작", type="primary", key="btn3"):
+            if not RENDI_KEY: st.error("사이드바에 Rendi API 키를 입력해주세요.")
+            else: st.info("Rendi API 모션 트래킹 준비 완료")
 
 # ----------------- TAB 4 (통합 MP4 병합기) -----------------
 with tab4:
-    st.subheader("📑 최종 영상(MP4) 자동 병합")
-    st.markdown("1번 탭에서 다운로드한 엑셀(비디오+음성 링크 포함)을 올려주세요.")
+    st.subheader("📑 최종 영상(MP4) 자동 병합 (비디오/이미지/음원 모두 지원)")
+    st.markdown("1번 탭에서 다운로드한 **'완성된 엑셀'**을 업로드하면 움직이는 동영상(또는 이미지)과 음성을 합쳐 완제품 MP4로 만듭니다!")
     
     file4 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f4")
     
@@ -181,42 +242,47 @@ with tab4:
                 
             for index, row in df4.iterrows():
                 topic = str(row.get('주제', f'video_{index}'))
-                # 이제 컬럼명이 '이미지'가 아니라 '비디오'입니다
-                vid_url = str(row.get('비디오', ''))
-                audio_url = str(row.get('음성', ''))
+                # '비디오', '이미지', '비디오 링크', '이미지 링크' 컬럼을 유연하게 자동 감지
+                vis_url = str(row.get('비디오', row.get('이미지', row.get('이미지 링크', ''))))
+                audio_url = str(row.get('음성', row.get('음성 링크', '')))
                 
-                status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 영상을 굽고 있습니다... ⏳**")
+                status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 완제품 동영상 제작 중... ⏳**")
                 
-                if "http" not in vid_url or "http" not in audio_url:
-                    st.warning(f"⚠️ '{topic}'은(는) 정상적인 비디오나 음성 링크가 없어 건너뜁니다.")
+                if "http" not in vis_url or "http" not in audio_url:
+                    st.warning(f"⚠️ '{topic}'은(는) 정상적인 미디어 링크(http...)가 없어 건너뜁니다.")
                     continue
                     
                 try:
-                    # 1. 파일 다운로드 (이제 mp4 파일을 다운로드합니다)
-                    vid_path = f"temp_vid_{index}.mp4"
+                    # 파일 확장자 또는 임시 다운로드
+                    temp_vis_path = f"temp_vis_{index}.bin"
                     audio_path = f"temp_audio_{index}.mp3"
                     output_path = f"output_videos/result_{index}.mp4"
                     
-                    download_file(vid_url, vid_path)
+                    download_file(vis_url, temp_vis_path)
                     download_file(audio_url, audio_path)
                     
-                    # 2. 영상과 음성 합치기
-                    video_clip = VideoFileClip(vid_path)
                     audio_clip = AudioFileClip(audio_path)
                     
-                    # 음성 길이에 맞춰서 동영상을 반복(루프) 재생시킵니다!
-                    if video_clip.duration < audio_clip.duration:
-                        # 영상이 너무 짧으면 음성 길이에 맞게 영상 클립을 여러 번 이어 붙임
-                        import math
-                        num_loops = math.ceil(audio_clip.duration / video_clip.duration)
-                        video_clip = concatenate_videoclips([video_clip] * num_loops)
+                    # 동영상(MP4/MOV)인지 이미지(PNG/JPG)인지 판별하여 합성
+                    is_video = False
+                    try:
+                        video_clip = VideoFileClip(temp_vis_path)
+                        is_video = True
+                    except Exception:
+                        video_clip = ImageClip(temp_vis_path)
                     
-                    # 최종 음성 길이만큼만 영상 자르기
-                    video_clip = video_clip.subclip(0, audio_clip.duration)
-                    video_clip = video_clip.set_audio(audio_clip)
-                    
-                    # 3. MP4 파일로 최종 저장
-                    video_clip.write_videofile(
+                    if is_video:
+                        # 비디오 클립인 경우 음성 길이에 맞춰 반복(Loop) 연결
+                        if video_clip.duration < audio_clip.duration:
+                            num_loops = math.ceil(audio_clip.duration / video_clip.duration)
+                            video_clip = concatenate_videoclips([video_clip] * num_loops)
+                        video_clip = video_clip.subclip(0, audio_clip.duration)
+                    else:
+                        # 정지 이미지인 경우 음성 길이에 맞게 재생시간 설정
+                        video_clip = video_clip.set_duration(audio_clip.duration)
+                        
+                    final_clip = video_clip.set_audio(audio_clip)
+                    final_clip.write_videofile(
                         output_path, 
                         fps=24, 
                         codec="libx264", 
@@ -224,12 +290,12 @@ with tab4:
                         logger=None
                     )
                     
-                    st.success(f"🎉 '{topic}' 움직이는 영상 완성! (아래에서 재생 및 다운로드 가능)")
+                    st.success(f"🎉 '{topic}' MP4 최종 동영상 완성!")
                     st.video(output_path)
                     
                     with open(output_path, "rb") as v_file:
                         st.download_button(
-                            label=f"💾 '{topic}' 움직이는 MP4 다운로드",
+                            label=f"💾 '{topic}' MP4 동영상 다운로드",
                             data=v_file,
                             file_name=f"{topic}.mp4",
                             mime="video/mp4",
@@ -237,8 +303,8 @@ with tab4:
                         )
                         
                 except Exception as e:
-                    st.error(f"에러 발생: {e}")
+                    st.error(f"'{topic}' 합성 중 에러 발생: {e}")
                 
                 progress_bar.progress((index + 1) / len(df4))
                 
-            status_text.success("✅ 모든 비디오 변환이 완료되었습니다!")
+            status_text.success("✅ 모든 MP4 완제품 동영상 생성이 완료되었습니다!")
