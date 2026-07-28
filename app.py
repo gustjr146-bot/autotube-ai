@@ -6,23 +6,25 @@ import time
 import os
 import urllib.request
 import math
+import numpy as np
 from urllib.parse import urlparse
-from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
+from PIL import Image, ImageDraw, ImageFont
+from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips
 
 # ==========================================
-# 1. 화면 및 기본 설정 (한글 폰트 자동 설치)
+# 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
 st.title("🎬 AutoTube Studio AI (통합형 마스터)")
 st.markdown("대본, 동영상, 음성 생성부터 **자동 한글 자막이 포함된 MP4 최종 병합**까지 모두 지원합니다.")
 
-# 💡 서버에 한글 폰트가 없으면 구글에서 '나눔고딕'을 자동으로 다운로드합니다!
+# 💡 서버에 한글 폰트가 없으면 구글에서 '나눔고딕'을 자동으로 다운로드합니다.
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
     try:
         urllib.request.urlretrieve("https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf", FONT_PATH)
     except Exception:
-        pass # 다운로드 실패 시 기본 폰트로 작동
+        pass 
 
 # ==========================================
 # 2. API 연동 함수 정의
@@ -35,7 +37,7 @@ def call_groq(prompt, api_key):
     payload = {
         "model": "llama-3.3-70b-versatile",  
         "messages": [
-            {"role": "system", "content": "당신은 한국어 유튜브 전문 작가입니다. 대본 본문만 짧고 명확하게 작성해 주세요."},
+            {"role": "system", "content": "당신은 한국어 유튜브 전문 작가입니다. 대본 본문만 1~2문단으로 짧게 작성해 주세요."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -47,68 +49,33 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
-    """fal.ai 비디오 생성 (대기시간을 5분으로 늘려 동영상이 무조건 나오도록 보장)"""
+def call_fal_video(prompt, aspect_ratio, api_key):
+    """fal.ai 비디오 생성 (Kling AI 모델 적용 - 더 빠르고 안정적임)"""
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
-    url = "https://queue.fal.run/fal-ai/luma-dream-machine"
+    # 💡 Luma 대신 최신 Kling AI로 교체!
+    url = "https://queue.fal.run/fal-ai/kling-video/v1/standard/text-to-video"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    payload = {"prompt": prompt, "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9"}
-    if pd.notna(ref_url) and str(ref_url).strip() and str(ref_url).strip() != 'nan':
-        payload["image_url"] = str(ref_url).strip()
-        
+    payload = {
+        "prompt": prompt,
+        "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9",
+        "duration": "5" # 5초짜리 영상
+    }
+    
     try:
         create_res = requests.post(url, headers=headers, json=payload)
         if create_res.status_code != 200: return None, f"비디오 거부({create_res.status_code})"
         response_url = create_res.json().get('response_url')
         
-        # 💡 기존 25번(2분)에서 60번(5분)으로 늘려 동영상 생성을 끝까지 기다립니다!
-        for _ in range(60):
+        for _ in range(60): # 5분 대기
             time.sleep(5)
             poll_res = requests.get(response_url, headers=headers)
             if poll_res.status_code == 200:
                 result_data = poll_res.json()
                 video_url = result_data.get('video', {}).get('url')
                 if video_url: return video_url, "성공"
-        return None, "시간 초과(5분)"
+        return None, "시간 초과"
     except Exception as e: return None, str(e)
-
-def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
-    if not api_key: return None
-    api_key = api_key.strip()
-    create_url = "https://api.kie.ai/api/v1/jobs/createTask"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": "google/nano-banana-edit",
-        "input": {"prompt": prompt, "output_format": "png", "aspect_ratio": aspect_ratio}
-    }
-    if pd.notna(ref_url) and str(ref_url).strip() and str(ref_url).strip() != 'nan':
-        payload["input"]["image_urls"] = [str(ref_url).strip()]
-        
-    try:
-        create_res = requests.post(create_url, headers=headers, json=payload)
-        if create_res.status_code != 200: return None
-        data = create_res.json().get('data')
-        if not data: return None
-        task_id = data.get('taskId')
-        
-        for _ in range(12):
-            time.sleep(5)
-            poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers)
-            if poll_res.status_code != 200: continue
-            poll_data_inner = poll_res.json().get('data')
-            if not poll_data_inner: return None
-            state = str(poll_data_inner.get('state', '')).lower()
-            if state in ['success', 'completed', 'done']:
-                res_json = poll_data_inner.get('resultJson', '{}')
-                if isinstance(res_json, str):
-                    try: res_json = json.loads(res_json)
-                    except: res_json = {}
-                urls = res_json.get('resultUrls', [])
-                return urls[0] if urls else None
-            elif state in ['failed', 'error']: return None
-        return None
-    except Exception: return None
 
 def call_fal_image(prompt, aspect_ratio, api_key):
     if not api_key: return None
@@ -151,24 +118,62 @@ def download_file(url, save_path):
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
         out_file.write(response.read())
 
+# 💡 ImageMagick 에러를 원천 차단하는 수제 자막 생성 함수!
+def create_subtitle_clip(text, video_width, duration):
+    try:
+        # 배경이 투명한 이미지 생성
+        img = Image.new('RGBA', (video_width, 200), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        
+        # 폰트 로드
+        try:
+            font = ImageFont.truetype(FONT_PATH, 50)
+        except Exception:
+            font = ImageFont.load_default()
+        
+        # 텍스트 나누기 (30글자마다 줄바꿈)
+        lines = [text[i:i+30] for i in range(0, len(text), 30)]
+        if len(lines) > 2:
+            lines = lines[:2] # 최대 2줄까지만
+            lines[1] = lines[1] + "..."
+            
+        y_text = 20
+        for line in lines:
+            # 텍스트 크기 계산
+            bbox = font.getbbox(line)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            
+            # 반투명 검은색 배경 박스 그리기
+            draw.rectangle(((video_width - w) / 2 - 20, y_text - 10, (video_width + w) / 2 + 20, y_text + h + 10), fill=(0, 0, 0, 180))
+            
+            # 하얀색 텍스트 그리기
+            draw.text(((video_width - w) / 2, y_text), line, font=font, fill=(255, 255, 255, 255))
+            y_text += h + 20
+            
+        # Pillow 이미지를 MoviePy가 사용할 수 있는 numpy 배열로 변환
+        img_np = np.array(img)
+        return ImageClip(img_np).set_duration(duration)
+    except Exception as e:
+        print(f"자막 생성 오류: {e}")
+        return None
+
 # ==========================================
 # 3. 사이드바 (API 키 설정)
 # ==========================================
 with st.sidebar:
     st.header("🔑 API 키 설정")
     GROQ_KEY = st.text_input("Groq API Key (대본용)", type="password")
-    FAL_KEY = st.text_input("fal.ai API Key (음성/비디오/대체이미지용)", type="password")
-    KIE_KEY = st.text_input("KIE API Key (비디오 실패시 1차 대체용)", type="password")
-    RENDI_KEY = st.text_input("Rendi API Key (모션용)", type="password")
+    FAL_KEY = st.text_input("fal.ai API Key (비디오/음성/대체이미지)", type="password")
 
 # ==========================================
 # 4. 메인 대시보드 탭
 # ==========================================
-tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
+tab1, tab2 = st.tabs(["🚀 자동화 파이프라인 (대본/비디오/음성 생성)", "📑 영상 병합 (자동 자막 비디오)"])
 
 # ----------------- TAB 1 -----------------
 with tab1:
-    st.subheader("대량 영상 재료(대본/시각자료/음성) 자동 생성")
+    st.subheader("대량 영상 재료(대본/동영상/음성) 자동 생성")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -180,14 +185,13 @@ with tab1:
         df1 = pd.read_excel(file1) if file1.name.endswith('.xlsx') else pd.read_csv(file1)
         st.success(f"✅ 총 {len(df1)}개의 작업 감지")
         
-        if st.button("🔥 영상 생성 시작 (비디오 우선)", type="primary"):
+        if st.button("🔥 비디오 생성 시작", type="primary"):
             progress_bar = st.progress(0)
             status_text = st.empty()
             results = []
             
             for index, row in df1.iterrows():
                 topic = str(row.get('주제', f'랜덤 주제 {index}'))
-                ref_image = str(row.get('레퍼런스', ''))
                 
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중... ✍️**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
@@ -195,18 +199,13 @@ with tab1:
                 eng_prompt = f"High quality cinematic visual about {topic}"
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 🎥 움직이는 비디오 생성 중... (최대 5분 소요) ⏳**")
                 
-                visual_url, vid_status = call_fal_video(eng_prompt, ref_image, aspect_ratio, FAL_KEY)
+                visual_url, vid_status = call_fal_video(eng_prompt, aspect_ratio, FAL_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**[{index+1}/{len(df1)}] 비디오 실패({vid_status})! KIE 이미지로 대체 중... 🎨**")
-                    visual_url = call_kie_image(eng_prompt, ref_image, aspect_ratio, KIE_KEY)
-                    
-                if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 지연! fal.ai 초고속 이미지로 강제 렌더링... ⚡**")
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] 비디오 실패({vid_status})! fal.ai 이미지로 대체... ⚡**")
                     visual_url = call_fal_image(eng_prompt, aspect_ratio, FAL_KEY)
                     
                 if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**[{index+1}/{len(df1)}] 고화질 임시 배경을 삽입합니다. 🛡️**")
                     w, h = (1080, 1920) if aspect_ratio == "9:16" else (1920, 1080)
                     visual_url = f"https://picsum.photos/seed/{index}/{w}/{h}"
                 
@@ -216,34 +215,22 @@ with tab1:
                 results.append({"주제": topic, "대본": ai_script, "비디오": visual_url, "음성": aud_url})
                 progress_bar.progress((index + 1) / len(df1))
                 
-            status_text.success("🎉 작업 완료! 엑셀을 다운로드하여 4번 탭으로 이동하세요.")
+            status_text.success("🎉 작업 완료! 엑셀을 다운로드하여 2번 탭으로 이동하세요.")
             result_df = pd.DataFrame(results)
             st.dataframe(result_df)
             csv = result_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button("💾 완성된 엑셀 다운로드", data=csv, file_name='video_materials.csv', mime='text/csv')
 
-# ----------------- TAB 2, 3 생략 -----------------
+# ----------------- TAB 2 (자막 병합기 - ImageMagick 없이 자막 생성!) -----------------
 with tab2:
-    st.subheader("🎵 음원 자동 생성 (자동음원 시트 업로드)")
-    file2 = st.file_uploader("음원 기획안 업로드", type=['csv', 'xlsx'], key="f2")
-    if file2:
-        if st.button("🎵 음원 생성 시작", type="primary", key="btn2"): st.info("대기열 등록 완료")
-with tab3:
-    st.subheader("💃 AI 모션 인플루언서 (AI모션 시트 업로드)")
-    file3 = st.file_uploader("모션 기획안 업로드", type=['csv', 'xlsx'], key="f3")
-    if file3:
-        if st.button("💃 모션 변환 시작", type="primary", key="btn3"): st.info("렌더링 시작...")
-
-# ----------------- TAB 4 (자막 병합기 - 한글 폰트 적용 완료!) -----------------
-with tab4:
     st.subheader("📑 최종 영상(MP4) 자동 병합 (한글 자막 추가)")
     st.markdown("1번 탭의 엑셀을 올리면 **비디오 + 음성 + 한글 자막**을 합쳐 1개의 완벽한 MP4로 만듭니다.")
     
-    file4 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f4")
+    file2 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f2")
     
-    if file4:
-        df4 = pd.read_csv(file4)
-        st.dataframe(df4.head(3))
+    if file2:
+        df2 = pd.read_csv(file2)
+        st.dataframe(df2.head(3))
         
         if st.button("🎬 자막 포함 동영상 렌더링 시작", type="primary"):
             progress_bar = st.progress(0)
@@ -252,13 +239,13 @@ with tab4:
             if not os.path.exists("output_videos"):
                 os.makedirs("output_videos")
                 
-            for index, row in df4.iterrows():
+            for index, row in df2.iterrows():
                 topic = str(row.get('주제', f'video_{index}'))
                 script_text = str(row.get('대본', ''))
                 vis_url = str(row.get('비디오', row.get('이미지', '')))
                 audio_url = str(row.get('음성', ''))
                 
-                status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 한글 자막 영상 렌더링 중... ⏳**")
+                status_text.markdown(f"**[{index+1}/{len(df2)}] '{topic}' 자막 영상 렌더링 중... ⏳**")
                 
                 if "http" not in vis_url or vis_url.lower() == 'nan':
                     vis_url = f"https://picsum.photos/seed/{index}/1080/1920"
@@ -295,21 +282,15 @@ with tab4:
                         
                     video_clip = video_clip.set_audio(audio_clip)
                     
-                    # 💡 다운로드 받은 '나눔고딕' 폰트를 강제로 지정하여 한글 깨짐/에러 완벽 방지!
-                    try:
-                        # 대본을 50글자씩 잘라서 화면을 너무 가리지 않게 합니다.
-                        display_text = script_text[:50] + "\n..." if len(script_text) > 50 else script_text
-                        
-                        txt_clip = TextClip(
-                            display_text, 
-                            font=FONT_PATH if os.path.exists(FONT_PATH) else 'Arial', # 폰트 강제 적용
-                            fontsize=45, color='white', bg_color='rgba(0,0,0,0.6)', 
-                            method='caption', size=(video_clip.w * 0.85, None)
-                        )
-                        txt_clip = txt_clip.set_position('center', 'bottom').set_duration(video_clip.duration)
-                        final_clip = CompositeVideoClip([video_clip, txt_clip])
-                    except Exception as font_err:
-                        st.warning(f"⚠️ 자막 렌더링 오류 (기본 영상으로 대체): {font_err}")
+                    # 💡 ImageMagick 에러 없이 100% 작동하는 수제 자막 생성기 호출!
+                    display_text = script_text[:60] if len(script_text) > 60 else script_text
+                    subtitle_clip = create_subtitle_clip(display_text, video_clip.w, video_clip.duration)
+                    
+                    if subtitle_clip:
+                        # 자막을 화면 중앙 하단에 배치
+                        subtitle_clip = subtitle_clip.set_position(('center', video_clip.h - 250))
+                        final_clip = CompositeVideoClip([video_clip, subtitle_clip])
+                    else:
                         final_clip = video_clip
                     
                     final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
@@ -323,6 +304,6 @@ with tab4:
                 except Exception as e:
                     st.error(f"'{topic}' 합성 중 에러 발생: {e}")
                 
-                progress_bar.progress((index + 1) / len(df4))
+                progress_bar.progress((index + 1) / len(df2))
                 
             status_text.success("✅ 모든 비디오 병합이 완료되었습니다!")
