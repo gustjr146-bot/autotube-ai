@@ -8,9 +8,13 @@ import urllib.request
 import math
 import numpy as np
 from urllib.parse import urlparse
-from PIL import Image, ImageDraw, ImageFont
 
-# 💡 구형 TextClip을 완전히 삭제했습니다! (ImageMagick 에러 원천 차단)
+# 💡 최신 버전 충돌(ANTIALIAS 에러)을 완벽하게 해결하는 강제 호환성 패치!
+import PIL
+from PIL import Image, ImageDraw, ImageFont
+if not hasattr(PIL.Image, 'ANTIALIAS'):
+    PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
+
 from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips
 
 # ==========================================
@@ -142,7 +146,6 @@ def download_file(url, save_path):
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
         out_file.write(response.read())
 
-# 💡 완전히 새로 만든 에러 없는 수제 자막 모듈!
 def create_subtitle_clip(text, video_width, duration):
     try:
         img = Image.new('RGBA', (video_width, 250), (0, 0, 0, 0))
@@ -293,7 +296,6 @@ with tab4:
                     
                     if is_video:
                         video_clip = VideoFileClip(temp_vis_path)
-                        # 💡 화면 깨짐(바둑판) 방지를 위해 짝수 픽셀 강제 조정
                         w, h = video_clip.size
                         video_clip = video_clip.resize(newsize=(w - w % 2, h - h % 2))
                         
@@ -303,12 +305,11 @@ with tab4:
                         video_clip = video_clip.subclip(0, audio_clip.duration)
                     else:
                         base_clip = ImageClip(temp_vis_path)
-                        # 💡 화면 깨짐 방지 짝수 보정
                         w, h = base_clip.size
                         w, h = w - w % 2, h - h % 2
                         base_clip = base_clip.resize(newsize=(w, h))
                         
-                        # 💡 사진이라도 동영상처럼 움직이게 하는 마법의 줌인(Zoom) 효과!
+                        # 💡 오류가 해결되어, 이제 이 코드가 사진을 동영상처럼 서서히 확대(줌인) 시켜줍니다!
                         def zoom(t): return 1.0 + 0.05 * (t / audio_clip.duration)
                         zoomed_clip = base_clip.resize(zoom).set_position(('center', 'center'))
                         video_clip = CompositeVideoClip([zoomed_clip], size=(w, h)).set_duration(audio_clip.duration)
