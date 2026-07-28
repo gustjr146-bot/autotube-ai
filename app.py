@@ -16,7 +16,7 @@ st.title("🎬 AutoTube Studio AI (통합형 마스터)")
 st.markdown("대본, 동영상/이미지, 음성 생성부터 **자동 자막이 포함된 MP4 최종 병합**까지 모두 지원합니다.")
 
 # ==========================================
-# 2. API 연동 함수 정의
+# 2. API 연동 함수 정의 (3중 방어 적용)
 # ==========================================
 def call_groq(prompt, api_key):
     if not api_key: return "Groq 에러: API 키가 없습니다."
@@ -38,6 +38,7 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code}): {res.text[:150]}"
     except Exception as e: return f"Groq 통신 에러: {str(e)[:150]}"
 
+# [1순위] fal.ai 비디오
 def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
     if not api_key: return None
     api_key = api_key.strip()
@@ -62,8 +63,9 @@ def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
         return None
     except Exception: return None
 
+# [2순위] KIE 이미지
 def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
-    if not api_key: return "KIE 에러: API 키 없음"
+    if not api_key: return None
     api_key = api_key.strip()
     create_url = "https://api.kie.ai/api/v1/jobs/createTask"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -76,9 +78,9 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
         
     try:
         create_res = requests.post(create_url, headers=headers, json=payload)
-        if create_res.status_code != 200: return f"KIE 거부 ({create_res.status_code})"
+        if create_res.status_code != 200: return None
         data = create_res.json().get('data')
-        if not data: return "KIE 에러: 데이터 없음"
+        if not data: return None
         task_id = data.get('taskId')
         
         for _ in range(12):
@@ -86,7 +88,7 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
             poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers)
             if poll_res.status_code != 200: continue
             poll_data_inner = poll_res.json().get('data')
-            if not poll_data_inner: return "KIE 상태 조회 에러"
+            if not poll_data_inner: return None
             state = str(poll_data_inner.get('state', '')).lower()
             if state in ['success', 'completed', 'done']:
                 res_json = poll_data_inner.get('resultJson', '{}')
@@ -94,11 +96,29 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
                     try: res_json = json.loads(res_json)
                     except: res_json = {}
                 urls = res_json.get('resultUrls', [])
-                return urls[0] if urls else "KIE URL 생성 실패"
-            elif state in ['failed', 'error']: return "KIE 생성 실패"
-        return "KIE 시간 초과"
-    except Exception as e: return f"KIE 통신 에러: {str(e)[:50]}"
+                return urls[0] if urls else None
+            elif state in ['failed', 'error']: return None
+        return None
+    except Exception: return None
 
+# [3순위] fal.ai 초고속 이미지 (절대 실패 방지용)
+def call_fal_image(prompt, aspect_ratio, api_key):
+    if not api_key: return "fal 이미지 에러: API 키 없음"
+    api_key = api_key.strip()
+    url = "https://queue.fal.run/fal-ai/fast-sdxl"
+    headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "prompt": prompt,
+        "image_size": "portrait_16_9" if aspect_ratio == "9:16" else "landscape_16_9"
+    }
+    try:
+        res = requests.post(url, headers=headers, json=payload)
+        if res.status_code == 200:
+            return res.json().get('images', [{}])[0].get('url')
+        else: return f"fal 이미지 거부 ({res.status_code})"
+    except Exception as e: return f"fal 통신 에러: {str(e)[:50]}"
+
+# 음성 생성
 def call_fal_tts(script, api_key):
     if not api_key: return "fal 에러: API 키가 없습니다."
     api_key = api_key.strip()
@@ -119,6 +139,7 @@ def call_fal_tts(script, api_key):
         return "fal 응답 시간 초과"
     except Exception as e: return f"fal 통신 에러: {str(e)[:50]}"
 
+# 다운로드 우회기
 def download_file(url, save_path):
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
@@ -130,18 +151,18 @@ def download_file(url, save_path):
 with st.sidebar:
     st.header("🔑 API 키 설정")
     GROQ_KEY = st.text_input("Groq API Key (대본용)", type="password")
-    FAL_KEY = st.text_input("fal.ai API Key (음성/비디오용)", type="password")
-    KIE_KEY = st.text_input("KIE API Key (비디오 실패시 대체용)", type="password")
+    FAL_KEY = st.text_input("fal.ai API Key (음성/비디오/대체이미지용)", type="password")
+    KIE_KEY = st.text_input("KIE API Key (비디오 실패시 1차 대체용)", type="password")
     RENDI_KEY = st.text_input("Rendi API Key (모션용)", type="password")
 
 # ==========================================
-# 4. 메인 대시보드 탭
+# 4. 메인 대시보드 탭 (4개 탭 전면 지원)
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 # ----------------- TAB 1 -----------------
 with tab1:
-    st.subheader("대량 영상 재료(대본/비디오/음성) 자동 생성")
+    st.subheader("대량 영상 재료(대본/시각자료/음성) 자동 생성")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -153,27 +174,34 @@ with tab1:
         df1 = pd.read_excel(file1) if file1.name.endswith('.xlsx') else pd.read_csv(file1)
         st.success(f"✅ 총 {len(df1)}개의 작업 감지")
         
-        if st.button("🔥 생성 시작", type="primary"):
+        if st.button("🔥 3중 방어 시스템 생성 시작", type="primary"):
             progress_bar = st.progress(0)
             status_text = st.empty()
             results = []
             
             for index, row in df1.iterrows():
-                status_text.markdown(f"**작업 {index+1}/{len(df1)} 진행 중...** (fal.ai 비디오 대기 중 ⏳)")
-                topic = str(row.get('주제', '랜덤 주제'))
+                topic = str(row.get('주제', f'랜덤 주제 {index}'))
                 ref_image = str(row.get('레퍼런스', ''))
                 
+                # 대본
+                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중... ✍️**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 
-                # 💡 1. 비디오 생성 시도
-                vid_prompt = f"High quality, cinematic video about {topic}"
-                visual_url = call_fal_video(vid_prompt, ref_image, aspect_ratio, FAL_KEY)
+                # 시각 자료 (3중 방어!)
+                eng_prompt = f"High quality cinematic photo/video of {topic}, highly detailed"
+                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 비디오(fal) 생성 시도 중... 🎥**")
+                visual_url = call_fal_video(eng_prompt, ref_image, aspect_ratio, FAL_KEY)
                 
-                # 💡 2. 비디오 실패 시 KIE 이미지로 즉시 대체 (에러 방어)
                 if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**작업 {index+1}: 비디오 서버 거부로 KIE 고화질 이미지로 대체합니다 🎨**")
-                    visual_url = call_kie_image(f"High quality cinematic photo of {topic}", ref_image, aspect_ratio, KIE_KEY)
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] 비디오 실패! KIE 이미지 생성 시도 중... 🎨**")
+                    visual_url = call_kie_image(eng_prompt, ref_image, aspect_ratio, KIE_KEY)
+                    
+                if not visual_url or "http" not in visual_url:
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 지연! fal.ai 초고속 이미지로 강제 렌더링 중... ⚡**")
+                    visual_url = call_fal_image(eng_prompt, aspect_ratio, FAL_KEY)
                 
+                # 음성
+                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 음성(TTS) 생성 중... 🗣️**")
                 aud_url = call_fal_tts(ai_script, FAL_KEY)
                 
                 results.append({"주제": topic, "대본": ai_script, "비디오": visual_url, "음성": aud_url})
@@ -232,7 +260,8 @@ with tab4:
                 status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 자막 영상 렌더링 중... ⏳**")
                 
                 if "http" not in vis_url or "http" not in audio_url:
-                    st.warning(f"⚠️ '{topic}'은(는) 정상적인 비디오/음성 링크가 없어 건너뜁니다.")
+                    # 건너뛰더라도 무엇 때문에 에러가 났는지 투명하게 알려줍니다!
+                    st.warning(f"⚠️ '{topic}' 건너뜀 (사유: 링크 불량 - 비디오[{vis_url[:15]}...] / 음성[{audio_url[:15]}...])")
                     continue
                     
                 try:
@@ -245,7 +274,6 @@ with tab4:
                     
                     audio_clip = AudioFileClip(audio_path)
                     
-                    # 💡 파일이 동영상인지 이미지인지 자동 판별!
                     is_video = False
                     try:
                         video_clip = VideoFileClip(temp_vis_path)
@@ -253,7 +281,6 @@ with tab4:
                     except Exception:
                         video_clip = ImageClip(temp_vis_path)
                     
-                    # 길이에 맞게 영상 반복 또는 이미지 늘리기
                     if is_video:
                         if video_clip.duration < audio_clip.duration:
                             num_loops = math.ceil(audio_clip.duration / video_clip.duration)
@@ -264,9 +291,7 @@ with tab4:
                         
                     video_clip = video_clip.set_audio(audio_clip)
                     
-                    # 💡 자막(TextClip) 추가 시도
                     try:
-                        # 대본 첫 50글자만 요약해서 화면 중앙 하단에 배치
                         display_text = script_text[:50] + "..." if len(script_text) > 50 else script_text
                         txt_clip = TextClip(
                             display_text, 
@@ -276,7 +301,7 @@ with tab4:
                         txt_clip = txt_clip.set_position('center', 'bottom').set_duration(video_clip.duration)
                         final_clip = CompositeVideoClip([video_clip, txt_clip])
                     except Exception as font_err:
-                        st.warning("⚠️ 서버 환경 폰트 이슈로 자막 없이 렌더링 됩니다.")
+                        st.warning("⚠️ 폰트 이슈로 자막 없이 렌더링 됩니다.")
                         final_clip = video_clip
                     
                     final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
@@ -292,4 +317,4 @@ with tab4:
                 
                 progress_bar.progress((index + 1) / len(df4))
                 
-            status_text.success("✅ 모든 자막 비디오 생성이 완료되었습니다!")
+            status_text.success("✅ 모든 비디오 병합이 완료되었습니다!")
