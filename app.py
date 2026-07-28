@@ -15,12 +15,13 @@ if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
 
 from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips
+import moviepy.video.fx.all as vfx  # 💡 부메랑(역재생) 효과를 위한 모듈 추가
 
 # ==========================================
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (다이내믹 자막 + 모션 적용)")
+st.title("🎬 AutoTube Studio AI (자막 최적화 + 자연스러운 모션)")
 st.markdown("대본, 동영상, 음성 생성부터 **쇼츠 스타일 다이내믹 자막이 포함된 MP4 최종 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
@@ -64,7 +65,9 @@ def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
         create_res = requests.post(url, headers=headers, json=payload)
         if create_res.status_code != 200: return None, f"비디오 거부"
         response_url = create_res.json().get('response_url')
-        for _ in range(60): 
+        
+        # 💡 비디오가 무조건 생성되도록 대기 시간을 대폭 늘림 (최대 6분 이상)
+        for _ in range(80): 
             time.sleep(5)
             poll_res = requests.get(response_url, headers=headers)
             if poll_res.status_code == 200:
@@ -145,15 +148,15 @@ def download_file(url, save_path):
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
         out_file.write(response.read())
 
-# 💡 [핵심] 쇼츠 스타일 다이내믹 동기화 자막 생성기 (절대 잘리지 않음!)
+# 💡 [핵심] 쇼츠 스타일 다이내믹 동기화 자막 (폰트 축소 및 12글자 제한)
 def create_dynamic_subtitles(text, video_width, video_height, duration):
     try:
-        # 대본을 18글자 내외의 청크(조각)로 분할
         words = text.replace('\n', ' ').split()
         chunks = []
         curr = ""
         for w in words:
-            if len(curr) + len(w) < 18:
+            # 절대 잘리지 않게 한 덩어리를 최대 12글자 내외로 제한
+            if len(curr) + len(w) < 13:
                 curr += w + " "
             else:
                 chunks.append(curr.strip())
@@ -165,13 +168,13 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
         if total_chars == 0: return []
         
         start_time = 0
-        try: font = ImageFont.truetype(FONT_PATH, 55) # 폰트 크기 확대
+        try: font = ImageFont.truetype(FONT_PATH, 42) # 💡 폰트 크기 대폭 축소 (55 -> 42)
         except Exception: font = ImageFont.load_default()
         
         for chunk in chunks:
             chunk_duration = duration * (len(chunk) / total_chars)
             
-            img = Image.new('RGBA', (video_width, 200), (0, 0, 0, 0))
+            img = Image.new('RGBA', (video_width, 150), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
             
             if hasattr(font, 'getbbox'):
@@ -183,14 +186,14 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
             x_pos = (video_width - w) / 2
             y_pos = 50
             
-            # 자막 배경 검은색 반투명 박스
-            draw.rectangle((x_pos - 20, y_pos - 15, x_pos + w + 20, y_pos + h + 25), fill=(0, 0, 0, 180))
+            # 자막 배경 박스
+            draw.rectangle((x_pos - 20, y_pos - 15, x_pos + w + 20, y_pos + h + 15), fill=(0, 0, 0, 180))
             # 자막 텍스트
             draw.text((x_pos, y_pos), chunk, font=font, fill=(255, 255, 255, 255))
             
             img_np = np.array(img)
             txt_clip = ImageClip(img_np).set_duration(chunk_duration).set_start(start_time)
-            txt_clip = txt_clip.set_position(('center', video_height - 350)) # 화면 하단 안전한 위치에 배치
+            txt_clip = txt_clip.set_position(('center', video_height - 300)) # 하단 적절한 위치 배치
             clips.append(txt_clip)
             
             start_time += chunk_duration
@@ -239,8 +242,9 @@ with tab1:
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중...**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 
-                eng_prompt = f"High quality cinematic visual about {topic}"
-                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 🎥 비디오 생성 중...**")
+                # 💡 인물이 자연스럽게 움직이도록 프롬프트 강화!
+                eng_prompt = f"High quality cinematic video about {topic}. A person talking and acting naturally, realistic human movement, dynamic and alive."
+                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 🎥 자연스러운 비디오 생성 중...**")
                 visual_url, vid_status = call_fal_video(eng_prompt, ref_image, aspect_ratio, FAL_KEY)
                 
                 if not visual_url or "http" not in visual_url:
@@ -271,8 +275,8 @@ with tab3:
     if file3 and st.button("💃 모션 변환 시작", type="primary"): st.info("렌더링 시작...")
 
 with tab4:
-    st.subheader("📑 최종 영상(MP4) 자동 병합 (쇼츠형 다이내믹 자막 추가)")
-    st.markdown("비디오 대신 사진이 생성되었더라도, **영화 같은 스캔(Pan & Scan) 애니메이션**으로 생동감 있게 움직입니다!")
+    st.subheader("📑 최종 영상(MP4) 자동 병합 (자연스러운 모션 적용)")
+    st.markdown("생성된 비디오를 **핑퐁(부메랑) 효과**로 자연스럽게 무한 반복시키며, 텍스트가 잘리지 않는 쇼츠 자막을 추가합니다!")
     
     file4 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f4")
     
@@ -312,35 +316,32 @@ with tab4:
                     audio_clip = AudioFileClip(audio_path)
                     
                     if is_video:
-                        video_clip = VideoFileClip(temp_vis_path)
+                        video_clip = VideoFileClip(temp_vis_path).without_audio()
                         w, h = video_clip.size
                         video_clip = video_clip.resize(newsize=(w - w % 2, h - h % 2))
                         
+                        # 💡 [핵심] 끊기지 않는 자연스러운 핑퐁(부메랑) 루프 효과!
                         if video_clip.duration < audio_clip.duration:
-                            num_loops = math.ceil(audio_clip.duration / video_clip.duration)
-                            video_clip = concatenate_videoclips([video_clip] * num_loops)
+                            reversed_clip = video_clip.fx(vfx.time_mirror)
+                            ping_pong_clip = concatenate_videoclips([video_clip, reversed_clip])
+                            num_loops = math.ceil(audio_clip.duration / ping_pong_clip.duration)
+                            video_clip = concatenate_videoclips([ping_pong_clip] * num_loops)
+                            
                         video_clip = video_clip.subclip(0, audio_clip.duration)
                     else:
+                        # 영상 생성이 실패해 사진으로 왔을 경우 스무스한 줌인 효과
                         base_clip = ImageClip(temp_vis_path)
                         w, h = base_clip.size
                         w, h = w - w % 2, h - h % 2
                         base_clip = base_clip.resize(newsize=(w, h))
                         
-                        # 💡 [핵심] 사진을 동영상처럼 확실하게 움직이게 하는 Pan & Scan 모션!
-                        # 이미지를 15% 확대한 뒤, 위에서 아래로 부드럽게 훑고 내려갑니다.
-                        enlarged_clip = base_clip.resize(1.15)
-                        
-                        def fl_pos(t):
-                            y_max = enlarged_clip.h - h
-                            y_curr = -int(y_max * (t / audio_clip.duration))
-                            return ('center', y_curr)
-                            
-                        animated_clip = enlarged_clip.set_position(fl_pos)
-                        video_clip = CompositeVideoClip([animated_clip], size=(w, h)).set_duration(audio_clip.duration)
+                        def zoom(t): return 1.0 + 0.05 * (t / audio_clip.duration)
+                        zoomed_clip = base_clip.resize(zoom).set_position(('center', 'center'))
+                        video_clip = CompositeVideoClip([zoomed_clip], size=(w, h)).set_duration(audio_clip.duration)
                         
                     video_clip = video_clip.set_audio(audio_clip)
                     
-                    # 💡 다이내믹 쇼츠 자막 추가 (음성에 맞춰 순차적으로 등장)
+                    # 💡 자막을 동적으로 생성하여 씌우기
                     subtitle_clips = create_dynamic_subtitles(script_text, video_clip.w, video_clip.h, video_clip.duration)
                     
                     if subtitle_clips:
