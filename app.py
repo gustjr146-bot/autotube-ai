@@ -6,6 +6,7 @@ import time
 import os
 import urllib.request
 import math
+from urllib.parse import urlparse
 from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
 
 # ==========================================
@@ -102,7 +103,6 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
 def call_fal_image(prompt, aspect_ratio, api_key):
     if not api_key: return None
     api_key = api_key.strip()
-    # 💡 큐(queue) 방식이 아닌 즉시 결과가 나오는 최신 주소로 수정!
     url = "https://fal.run/fal-ai/fast-sdxl"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
     payload = {
@@ -179,11 +179,9 @@ with tab1:
                 topic = str(row.get('주제', f'랜덤 주제 {index}'))
                 ref_image = str(row.get('레퍼런스', ''))
                 
-                # 1. 대본
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중... ✍️**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 
-                # 2. 시각 자료 (4중 방어망)
                 eng_prompt = f"High quality cinematic visual about {topic}"
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 비디오(fal) 시도 중... 🎥**")
                 visual_url = call_fal_video(eng_prompt, ref_image, aspect_ratio, FAL_KEY)
@@ -201,7 +199,6 @@ with tab1:
                     w, h = (1080, 1920) if aspect_ratio == "9:16" else (1920, 1080)
                     visual_url = f"https://picsum.photos/seed/{index}/{w}/{h}"
                 
-                # 3. 음성
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 음성(TTS) 생성 중... 🗣️**")
                 aud_url = call_fal_tts(ai_script, FAL_KEY)
                 
@@ -214,27 +211,23 @@ with tab1:
             csv = result_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button("💾 완성된 엑셀 다운로드", data=csv, file_name='video_materials.csv', mime='text/csv')
 
-# ----------------- TAB 2 -----------------
+# ----------------- TAB 2, 3 -----------------
 with tab2:
     st.subheader("🎵 음원 자동 생성 (자동음원 시트 업로드)")
     file2 = st.file_uploader("음원 기획안 업로드", type=['csv', 'xlsx'], key="f2")
     if file2:
         df2 = pd.read_excel(file2) if file2.name.endswith('.xlsx') else pd.read_csv(file2)
         st.dataframe(df2.head(3))
-        if st.button("🎵 음원 생성 시작", type="primary", key="btn2"):
-            st.info("API 연결 진행 중... (현재 대기열에 등록되었습니다.)")
-
-# ----------------- TAB 3 -----------------
+        if st.button("🎵 음원 생성 시작", type="primary", key="btn2"): st.info("대기열 등록 완료")
 with tab3:
     st.subheader("💃 AI 모션 인플루언서 (AI모션 시트 업로드)")
     file3 = st.file_uploader("모션 기획안 업로드", type=['csv', 'xlsx'], key="f3")
     if file3:
         df3 = pd.read_excel(file3) if file3.name.endswith('.xlsx') else pd.read_csv(file3)
         st.dataframe(df3.head(3))
-        if st.button("💃 모션 변환 시작", type="primary", key="btn3"):
-            st.info("Rendi API와 연결하여 모션 렌더링을 시작합니다...")
+        if st.button("💃 모션 변환 시작", type="primary", key="btn3"): st.info("렌더링 시작...")
 
-# ----------------- TAB 4 (자막 병합기 - 런타임 100% 보장) -----------------
+# ----------------- TAB 4 (자막 병합기 - 확장자 스마트 판별 기능 추가!) -----------------
 with tab4:
     st.subheader("📑 최종 영상(MP4) 자동 병합 (자막 추가)")
     st.markdown("1번 탭의 엑셀을 올리면 **비디오(또는 이미지) + 음성 + 예쁜 자막**을 합쳐 1개의 MP4로 만듭니다.")
@@ -260,9 +253,8 @@ with tab4:
                 
                 status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 자막 영상 렌더링 중... ⏳**")
                 
-                # 💡 과거에 생성하다가 에러(nan)가 났던 CSV 파일을 위한 특별 구제 기능!
                 if "http" not in vis_url or vis_url.lower() == 'nan':
-                    st.info(f"💡 '{topic}'의 시각자료 링크가 비어있어 예쁜 임시 배경을 강제로 삽입합니다!")
+                    st.info(f"💡 '{topic}'의 시각자료 링크가 비어있어 예쁜 임시 배경을 삽입합니다!")
                     vis_url = f"https://picsum.photos/seed/{index}/1080/1920"
                     
                 if "http" not in audio_url or audio_url.lower() == 'nan':
@@ -270,7 +262,19 @@ with tab4:
                     continue
                     
                 try:
-                    temp_vis_path = f"temp_vis_{index}.mp4"
+                    # 💡 스마트 확장자 분석기 추가! (이미지인지 동영상인지 URL을 보고 판별)
+                    parsed_url = urlparse(vis_url)
+                    ext = os.path.splitext(parsed_url.path)[1].lower()
+                    
+                    if ext in ['.mp4', '.mov', '.webm', '.avi']:
+                        is_video = True
+                    elif ext in ['.jpg', '.jpeg', '.png', '.webp']:
+                        is_video = False
+                    else:
+                        is_video = False
+                        ext = '.jpg' # 픽섬(picsum)이나 확장자가 없는 경우 무조건 jpg로 취급
+                        
+                    temp_vis_path = f"temp_vis_{index}{ext}"
                     audio_path = f"temp_audio_{index}.mp3"
                     output_path = f"output_videos/result_sub_{index}.mp4"
                     
@@ -279,19 +283,15 @@ with tab4:
                     
                     audio_clip = AudioFileClip(audio_path)
                     
-                    is_video = False
-                    try:
-                        video_clip = VideoFileClip(temp_vis_path)
-                        is_video = True
-                    except Exception:
-                        video_clip = ImageClip(temp_vis_path)
-                    
+                    # 동영상과 이미지를 각각 맞는 도구로 안전하게 엽니다!
                     if is_video:
+                        video_clip = VideoFileClip(temp_vis_path)
                         if video_clip.duration < audio_clip.duration:
                             num_loops = math.ceil(audio_clip.duration / video_clip.duration)
                             video_clip = concatenate_videoclips([video_clip] * num_loops)
                         video_clip = video_clip.subclip(0, audio_clip.duration)
                     else:
+                        video_clip = ImageClip(temp_vis_path)
                         video_clip = video_clip.set_duration(audio_clip.duration)
                         
                     video_clip = video_clip.set_audio(audio_clip)
@@ -311,7 +311,7 @@ with tab4:
                     
                     final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
                     
-                    st.success(f"🎉 '{topic}' 자막 포함 동영상 완성!")
+                    st.success(f"🎉 '{topic}' 동영상 완성!")
                     st.video(output_path)
                     
                     with open(output_path, "rb") as v_file:
@@ -322,4 +322,4 @@ with tab4:
                 
                 progress_bar.progress((index + 1) / len(df4))
                 
-            status_text.success("✅ 모든 자막 비디오 생성이 완료되었습니다!")
+            status_text.success("✅ 모든 비디오 병합이 완료되었습니다!")
