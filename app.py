@@ -21,8 +21,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (자연스러운 Runway Gen-3 비디오)")
-st.markdown("대본, **진짜 움직이는 동영상(Runway Gen-3)**, 음성 생성부터 **쇼츠 스타일 다이내믹 자막 병합**까지 지원합니다.")
+st.title("🎬 AutoTube Studio AI (KIE 비디오 + 자막 최적화)")
+st.markdown("대본, **한국인 동영상(KIE Kling)**, 음성 생성부터 **2/5 위치 최적화 자막 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -53,62 +53,41 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-# 💡 [핵심] Luma를 버리고 Runway Gen-3 Turbo 모델로 전격 교체!
-def call_fal_video(prompt, aspect_ratio, api_key):
-    if not api_key: return None, "API 키 없음"
-    api_key = api_key.strip()
-    
-    # Runway Gen-3 Alpha Turbo API 주소
-    url = "https://queue.fal.run/fal-ai/runway-gen3/turbo/text-to-video"
-    headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    
-    # 자연스러운 인물 움직임을 강제하는 프롬프트 추가
-    enhanced_prompt = f"A highly realistic and natural video about {prompt}. A person is moving, breathing, and expressing naturally. Cinematic lighting, high quality."
-    
-    payload = {
-        "prompt": enhanced_prompt,
-        "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9"
-    }
-    
-    try:
-        create_res = requests.post(url, headers=headers, json=payload)
-        if create_res.status_code != 200: return None, f"비디오 거부({create_res.status_code})"
-        response_url = create_res.json().get('response_url')
-        
-        # 10분 대기 (진짜 동영상을 뽑기 위해 충분히 기다립니다)
-        for _ in range(120): 
-            time.sleep(5)
-            poll_res = requests.get(response_url, headers=headers)
-            if poll_res.status_code == 200:
-                result_data = poll_res.json()
-                video_url = result_data.get('video', {}).get('url')
-                if video_url: return video_url, "성공"
-        return None, "시간 초과"
-    except Exception as e: return None, str(e)
-
-def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
-    if not api_key: return None
+# 💡 [핵심] fal.ai 대신 고객님이 크레딧을 가진 KIE 서버의 Kling 비디오 모델을 사용합니다!
+def call_kie_video(prompt, aspect_ratio, api_key):
+    if not api_key: return None, "KIE API 키 없음"
     api_key = api_key.strip()
     create_url = "https://api.kie.ai/api/v1/jobs/createTask"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    
+    # 한국인과 자연스러운 움직임을 강제하는 프롬프트 적용
+    enhanced_prompt = f"A highly realistic and cinematic video of a Korean person related to {prompt}. The Korean person is acting naturally, breathing, and expressing naturally. High quality, detailed."
+    
     payload = {
-        "model": "google/nano-banana-edit",
-        "input": {"prompt": prompt, "output_format": "png", "aspect_ratio": aspect_ratio}
+        "model": "kuaishou/kling-video",
+        "input": {
+            "prompt": enhanced_prompt,
+            "duration": "5",
+            "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9"
+        }
     }
-    if pd.notna(ref_url) and str(ref_url).strip() and str(ref_url).strip() != 'nan':
-        payload["input"]["image_urls"] = [str(ref_url).strip()]
+    
     try:
         create_res = requests.post(create_url, headers=headers, json=payload)
-        if create_res.status_code != 200: return None
+        if create_res.status_code != 200: return None, f"비디오 거부({create_res.status_code})"
+        
         data = create_res.json().get('data')
-        if not data: return None
+        if not data: return None, "크레딧 부족 또는 서버 에러"
         task_id = data.get('taskId')
-        for _ in range(12):
+        
+        # 비디오 생성을 위해 최대 10분 대기
+        for _ in range(120):
             time.sleep(5)
             poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers)
             if poll_res.status_code != 200: continue
             poll_data_inner = poll_res.json().get('data')
-            if not poll_data_inner: return None
+            if not poll_data_inner: continue
+            
             state = str(poll_data_inner.get('state', '')).lower()
             if state in ['success', 'completed', 'done']:
                 res_json = poll_data_inner.get('resultJson', '{}')
@@ -116,17 +95,18 @@ def call_kie_image(prompt, ref_url, aspect_ratio, api_key):
                     try: res_json = json.loads(res_json)
                     except: res_json = {}
                 urls = res_json.get('resultUrls', [])
-                return urls[0] if urls else None
-            elif state in ['failed', 'error']: return None
-        return None
-    except Exception: return None
+                if urls: return urls[0], "성공"
+            elif state in ['failed', 'error']:
+                return None, "서버 렌더링 실패"
+        return None, "시간 초과"
+    except Exception as e: return None, str(e)
 
 def call_fal_image(prompt, aspect_ratio, api_key):
     if not api_key: return None
     api_key = api_key.strip()
     url = "https://fal.run/fal-ai/fast-sdxl"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    payload = {"prompt": prompt, "image_size": "portrait_16_9" if aspect_ratio == "9:16" else "landscape_16_9"}
+    payload = {"prompt": f"A realistic Korean person, {prompt}", "image_size": "portrait_16_9" if aspect_ratio == "9:16" else "landscape_16_9"}
     try:
         res = requests.post(url, headers=headers, json=payload)
         if res.status_code == 200: return res.json().get('images', [{}])[0].get('url')
@@ -175,7 +155,8 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
         if total_chars == 0: return []
         
         start_time = 0
-        try: font = ImageFont.truetype(FONT_PATH, 42)
+        # 💡 폰트 사이즈를 42 -> 35로 축소!
+        try: font = ImageFont.truetype(FONT_PATH, 35)
         except Exception: font = ImageFont.load_default()
         
         for chunk in chunks:
@@ -198,7 +179,10 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
             
             img_np = np.array(img)
             txt_clip = ImageClip(img_np).set_duration(chunk_duration).set_start(start_time)
-            txt_clip = txt_clip.set_position(('center', video_height - 300))
+            
+            # 💡 자막 위치를 화면 하단에서 2/5 지점(약 40% 위치)으로 끌어올림!
+            subtitle_y = video_height - (video_height * 0.4)
+            txt_clip = txt_clip.set_position(('center', subtitle_y)) 
             clips.append(txt_clip)
             
             start_time += chunk_duration
@@ -214,8 +198,8 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
 with st.sidebar:
     st.header("🔑 API 키 설정")
     GROQ_KEY = st.text_input("Groq API Key (대본용)", type="password")
-    FAL_KEY = st.text_input("fal.ai API Key (비디오/음성)", type="password")
-    KIE_KEY = st.text_input("KIE API Key (대체용)", type="password")
+    KIE_KEY = st.text_input("KIE API Key (⭐메인 비디오용)", type="password")
+    FAL_KEY = st.text_input("fal.ai API Key (음성/대체이미지용)", type="password")
     RENDI_KEY = st.text_input("Rendi API Key (모션용)", type="password")
 
 # ==========================================
@@ -224,7 +208,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성")
+    st.subheader("대량 영상 재료 자동 생성 (한국인 비디오)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -242,21 +226,18 @@ with tab1:
             
             for index, row in df1.iterrows():
                 topic = str(row.get('주제', f'랜덤 주제 {index}'))
-                ref_image = str(row.get('레퍼런스', ''))
                 
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중...**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 
-                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 🎥 Runway Gen-3 비디오 생성 중... (최대 10분) ⏳**")
-                visual_url, vid_status = call_fal_video(topic, aspect_ratio, FAL_KEY)
+                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 🎥 KIE 한국인 비디오 생성 중... (최대 10분) ⏳**")
+                
+                # 💡 fal.ai 대신 KIE 비디오 엔진 호출!
+                visual_url, vid_status = call_kie_video(topic, aspect_ratio, KIE_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**[{index+1}/{len(df1)}] 비디오 실패({vid_status})! KIE 이미지로 대체 중... 🎨**")
-                    visual_url = call_kie_image(f"High quality cinematic photo of {topic}", ref_image, aspect_ratio, KIE_KEY)
-                
-                if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 지연! fal.ai 이미지로 대체... ⚡**")
-                    visual_url = call_fal_image(f"High quality photo of {topic}", aspect_ratio, FAL_KEY)
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] 비디오 실패({vid_status})! fal.ai 이미지로 대체... ⚡**")
+                    visual_url = call_fal_image(topic, aspect_ratio, FAL_KEY)
                     
                 if not visual_url or "http" not in visual_url:
                     w, h = (1080, 1920) if aspect_ratio == "9:16" else (1920, 1080)
@@ -271,18 +252,11 @@ with tab1:
             status_text.success("🎉 완료! 엑셀을 다운로드하여 4번 탭으로 이동하세요.")
             st.download_button("💾 완성된 엑셀 다운로드", data=pd.DataFrame(results).to_csv(index=False).encode('utf-8-sig'), file_name='video_materials.csv', mime='text/csv')
 
-with tab2:
-    st.subheader("🎵 음원 자동 생성")
-    file2 = st.file_uploader("음원 기획안 업로드", type=['csv', 'xlsx'], key="f2")
-    if file2 and st.button("🎵 음원 생성 시작", type="primary"): st.info("대기열 등록 완료")
-
-with tab3:
-    st.subheader("💃 AI 모션 인플루언서")
-    file3 = st.file_uploader("모션 기획안 업로드", type=['csv', 'xlsx'], key="f3")
-    if file3 and st.button("💃 모션 변환 시작", type="primary"): st.info("렌더링 시작...")
+with tab2: st.info("대기열 등록 완료")
+with tab3: st.info("렌더링 시작...")
 
 with tab4:
-    st.subheader("📑 최종 영상(MP4) 자동 병합 (자연스러운 모션 적용)")
+    st.subheader("📑 최종 영상(MP4) 자동 병합")
     
     file4 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f4")
     
