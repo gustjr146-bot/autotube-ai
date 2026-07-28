@@ -15,14 +15,14 @@ if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
 
 from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips
-import moviepy.video.fx.all as vfx  # 💡 부메랑(역재생) 효과를 위한 모듈 추가
+import moviepy.video.fx.all as vfx
 
 # ==========================================
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (자막 최적화 + 자연스러운 모션)")
-st.markdown("대본, 동영상, 음성 생성부터 **쇼츠 스타일 다이내믹 자막이 포함된 MP4 최종 병합**까지 지원합니다.")
+st.title("🎬 AutoTube Studio AI (자연스러운 Runway Gen-3 비디오)")
+st.markdown("대본, **진짜 움직이는 동영상(Runway Gen-3)**, 음성 생성부터 **쇼츠 스타일 다이내믹 자막 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -53,21 +53,30 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-def call_fal_video(prompt, ref_url, aspect_ratio, api_key):
+# 💡 [핵심] Luma를 버리고 Runway Gen-3 Turbo 모델로 전격 교체!
+def call_fal_video(prompt, aspect_ratio, api_key):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
-    url = "https://queue.fal.run/fal-ai/luma-dream-machine"
+    
+    # Runway Gen-3 Alpha Turbo API 주소
+    url = "https://queue.fal.run/fal-ai/runway-gen3/turbo/text-to-video"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    payload = {"prompt": prompt, "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9"}
-    if pd.notna(ref_url) and str(ref_url).strip() and str(ref_url).strip() != 'nan':
-        payload["image_url"] = str(ref_url).strip()
+    
+    # 자연스러운 인물 움직임을 강제하는 프롬프트 추가
+    enhanced_prompt = f"A highly realistic and natural video about {prompt}. A person is moving, breathing, and expressing naturally. Cinematic lighting, high quality."
+    
+    payload = {
+        "prompt": enhanced_prompt,
+        "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9"
+    }
+    
     try:
         create_res = requests.post(url, headers=headers, json=payload)
-        if create_res.status_code != 200: return None, f"비디오 거부"
+        if create_res.status_code != 200: return None, f"비디오 거부({create_res.status_code})"
         response_url = create_res.json().get('response_url')
         
-        # 💡 비디오가 무조건 생성되도록 대기 시간을 대폭 늘림 (최대 6분 이상)
-        for _ in range(80): 
+        # 10분 대기 (진짜 동영상을 뽑기 위해 충분히 기다립니다)
+        for _ in range(120): 
             time.sleep(5)
             poll_res = requests.get(response_url, headers=headers)
             if poll_res.status_code == 200:
@@ -148,14 +157,12 @@ def download_file(url, save_path):
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
         out_file.write(response.read())
 
-# 💡 [핵심] 쇼츠 스타일 다이내믹 동기화 자막 (폰트 축소 및 12글자 제한)
 def create_dynamic_subtitles(text, video_width, video_height, duration):
     try:
         words = text.replace('\n', ' ').split()
         chunks = []
         curr = ""
         for w in words:
-            # 절대 잘리지 않게 한 덩어리를 최대 12글자 내외로 제한
             if len(curr) + len(w) < 13:
                 curr += w + " "
             else:
@@ -168,7 +175,7 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
         if total_chars == 0: return []
         
         start_time = 0
-        try: font = ImageFont.truetype(FONT_PATH, 42) # 💡 폰트 크기 대폭 축소 (55 -> 42)
+        try: font = ImageFont.truetype(FONT_PATH, 42)
         except Exception: font = ImageFont.load_default()
         
         for chunk in chunks:
@@ -186,14 +193,12 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
             x_pos = (video_width - w) / 2
             y_pos = 50
             
-            # 자막 배경 박스
             draw.rectangle((x_pos - 20, y_pos - 15, x_pos + w + 20, y_pos + h + 15), fill=(0, 0, 0, 180))
-            # 자막 텍스트
             draw.text((x_pos, y_pos), chunk, font=font, fill=(255, 255, 255, 255))
             
             img_np = np.array(img)
             txt_clip = ImageClip(img_np).set_duration(chunk_duration).set_start(start_time)
-            txt_clip = txt_clip.set_position(('center', video_height - 300)) # 하단 적절한 위치 배치
+            txt_clip = txt_clip.set_position(('center', video_height - 300))
             clips.append(txt_clip)
             
             start_time += chunk_duration
@@ -242,15 +247,17 @@ with tab1:
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중...**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 
-                # 💡 인물이 자연스럽게 움직이도록 프롬프트 강화!
-                eng_prompt = f"High quality cinematic video about {topic}. A person talking and acting naturally, realistic human movement, dynamic and alive."
-                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 🎥 자연스러운 비디오 생성 중...**")
-                visual_url, vid_status = call_fal_video(eng_prompt, ref_image, aspect_ratio, FAL_KEY)
+                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 🎥 Runway Gen-3 비디오 생성 중... (최대 10분) ⏳**")
+                visual_url, vid_status = call_fal_video(topic, aspect_ratio, FAL_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    visual_url = call_kie_image(eng_prompt, ref_image, aspect_ratio, KIE_KEY)
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] 비디오 실패({vid_status})! KIE 이미지로 대체 중... 🎨**")
+                    visual_url = call_kie_image(f"High quality cinematic photo of {topic}", ref_image, aspect_ratio, KIE_KEY)
+                
                 if not visual_url or "http" not in visual_url:
-                    visual_url = call_fal_image(eng_prompt, aspect_ratio, FAL_KEY)
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 지연! fal.ai 이미지로 대체... ⚡**")
+                    visual_url = call_fal_image(f"High quality photo of {topic}", aspect_ratio, FAL_KEY)
+                    
                 if not visual_url or "http" not in visual_url:
                     w, h = (1080, 1920) if aspect_ratio == "9:16" else (1920, 1080)
                     visual_url = f"https://picsum.photos/seed/{index}/{w}/{h}"
@@ -276,7 +283,6 @@ with tab3:
 
 with tab4:
     st.subheader("📑 최종 영상(MP4) 자동 병합 (자연스러운 모션 적용)")
-    st.markdown("생성된 비디오를 **핑퐁(부메랑) 효과**로 자연스럽게 무한 반복시키며, 텍스트가 잘리지 않는 쇼츠 자막을 추가합니다!")
     
     file4 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f4")
     
@@ -320,7 +326,6 @@ with tab4:
                         w, h = video_clip.size
                         video_clip = video_clip.resize(newsize=(w - w % 2, h - h % 2))
                         
-                        # 💡 [핵심] 끊기지 않는 자연스러운 핑퐁(부메랑) 루프 효과!
                         if video_clip.duration < audio_clip.duration:
                             reversed_clip = video_clip.fx(vfx.time_mirror)
                             ping_pong_clip = concatenate_videoclips([video_clip, reversed_clip])
@@ -329,7 +334,6 @@ with tab4:
                             
                         video_clip = video_clip.subclip(0, audio_clip.duration)
                     else:
-                        # 영상 생성이 실패해 사진으로 왔을 경우 스무스한 줌인 효과
                         base_clip = ImageClip(temp_vis_path)
                         w, h = base_clip.size
                         w, h = w - w % 2, h - h % 2
@@ -341,7 +345,6 @@ with tab4:
                         
                     video_clip = video_clip.set_audio(audio_clip)
                     
-                    # 💡 자막을 동적으로 생성하여 씌우기
                     subtitle_clips = create_dynamic_subtitles(script_text, video_clip.w, video_clip.h, video_clip.duration)
                     
                     if subtitle_clips:
