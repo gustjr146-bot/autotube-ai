@@ -21,8 +21,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (자연스러운 동영상 생성 보장)")
-st.markdown("대본, **진짜 움직이는 동영상(Runway Gen-3)**, 음성 생성부터 **완벽한 위치의 자동 자막 병합**까지 지원합니다.")
+st.title("🎬 AutoTube Studio AI (진짜 동영상 보장 마스터)")
+st.markdown("대본, **투트랙 진짜 동영상(KIE/fal.ai)**, 음성 생성부터 **완벽한 싱크의 자동 자막 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -53,28 +53,66 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-# 💡 [핵심] 무조건 진짜 동영상을 생성하는 Runway Gen-3 함수!
-def call_runway_video(prompt, aspect_ratio, duration, api_key):
+# 💡 [1순위] KIE Kling 비디오 엔진 (진짜 사람 움직임 특화)
+def call_kie_video(prompt, aspect_ratio, duration, api_key):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
-    url = "https://queue.fal.run/fal-ai/runway-gen3/turbo/text-to-video"
-    headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    
-    # AI가 헷갈리지 않게 무조건 사람이 자연스럽게 움직이도록 프롬프트를 고정합니다.
-    enhanced_prompt = f"A highly realistic, cinematic live-action video of a Korean person. {prompt}. The person is acting very naturally, breathing, blinking, and moving like a real human. Extremely lifelike movement."
+    create_url = "https://api.kie.ai/api/v1/jobs/createTask"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     
     payload = {
-        "prompt": enhanced_prompt,
-        "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9"
+        "model": "kuaishou/kling-video",
+        "input": {
+            "prompt": prompt,
+            "duration": str(duration),
+            "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9"
+        }
     }
-    
+    try:
+        create_res = requests.post(create_url, headers=headers, json=payload)
+        if create_res.status_code != 200: return None, f"거부({create_res.status_code})"
+        
+        data = create_res.json().get('data')
+        if not data: return None, "에러"
+        task_id = data.get('taskId')
+        
+        for _ in range(120): # 최대 10분 대기
+            time.sleep(5)
+            poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers)
+            if poll_res.status_code != 200: continue
+            poll_data_inner = poll_res.json().get('data')
+            if not poll_data_inner: continue
+            
+            state = str(poll_data_inner.get('state', '')).lower()
+            if state in ['success', 'completed', 'done']:
+                res_json = poll_data_inner.get('resultJson', '{}')
+                if isinstance(res_json, str):
+                    try: res_json = json.loads(res_json)
+                    except: res_json = {}
+                urls = res_json.get('resultUrls', [])
+                if urls: return urls[0], "성공"
+            elif state in ['failed', 'error']:
+                return None, "실패"
+        return None, "시간 초과"
+    except Exception as e: return None, str(e)
+
+# 💡 [2순위] fal.ai 비디오 엔진 (KIE가 막혔을 때 예비용)
+def call_fal_video(prompt, aspect_ratio, api_key):
+    if not api_key: return None, "API 키 없음"
+    api_key = api_key.strip()
+    url = "https://queue.fal.run/fal-ai/kling-video/v1/standard/text-to-video"
+    headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "prompt": prompt,
+        "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9",
+        "duration": "5"
+    }
     try:
         create_res = requests.post(url, headers=headers, json=payload)
-        if create_res.status_code != 200: return None, f"비디오 거부({create_res.status_code})"
+        if create_res.status_code != 200: return None, f"거부({create_res.status_code})"
         response_url = create_res.json().get('response_url')
         
-        # 💡 비디오 렌더링이 무조건 완료되도록 240번(최대 20분)까지 끈기 있게 기다립니다.
-        for _ in range(240): 
+        for _ in range(120): 
             time.sleep(5)
             poll_res = requests.get(response_url, headers=headers)
             if poll_res.status_code == 200:
@@ -83,6 +121,18 @@ def call_runway_video(prompt, aspect_ratio, duration, api_key):
                 if video_url: return video_url, "성공"
         return None, "시간 초과"
     except Exception as e: return None, str(e)
+
+def call_fal_image(prompt, aspect_ratio, api_key):
+    if not api_key: return None
+    api_key = api_key.strip()
+    url = "https://fal.run/fal-ai/fast-sdxl"
+    headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
+    payload = {"prompt": prompt, "image_size": "portrait_16_9" if aspect_ratio == "9:16" else "landscape_16_9"}
+    try:
+        res = requests.post(url, headers=headers, json=payload)
+        if res.status_code == 200: return res.json().get('images', [{}])[0].get('url')
+        return None
+    except Exception: return None
 
 def call_fal_tts(script, api_key):
     if not api_key: return "fal 에러: API 키 없음"
@@ -108,7 +158,7 @@ def download_file(url, save_path):
     with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
         out_file.write(response.read())
 
-# 💡 고객님이 만족하신 2/5 위치의 완벽한 자막 로직 (수정 없이 그대로 유지)
+# 💡 고객님이 완벽하게 만족하신 자막 유지 (0.75 위치, 15자 분할)
 def create_dynamic_subtitles(text, video_width, video_height, duration):
     try:
         words = text.replace('\n', ' ').split()
@@ -151,6 +201,7 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
             img_np = np.array(img)
             txt_clip = ImageClip(img_np).set_duration(chunk_duration).set_start(start_time)
             
+            # 자막 위치 하단 유지
             subtitle_y = video_height * 0.75
             txt_clip = txt_clip.set_position(('center', subtitle_y))
             clips.append(txt_clip)
@@ -163,12 +214,13 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
         return []
 
 # ==========================================
-# 3. 사이드바 
+# 3. 사이드바 (KIE 키 복구 완료!)
 # ==========================================
 with st.sidebar:
     st.header("🔑 API 키 설정")
     GROQ_KEY = st.text_input("Groq API Key (대본용)", type="password")
-    FAL_KEY = st.text_input("fal.ai API Key (⭐비디오 및 음성용)", type="password")
+    KIE_KEY = st.text_input("KIE API Key (⭐1순위: 메인 비디오용)", type="password")
+    FAL_KEY = st.text_input("fal.ai API Key (⭐2순위: 비디오/음성용)", type="password")
     RENDI_KEY = st.text_input("Rendi API Key (모션용)", type="password")
 
 # ==========================================
@@ -177,7 +229,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성 (진짜 동영상 보장)")
+    st.subheader("대량 영상 재료 자동 생성 (진짜 동영상 100% 보장)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -203,13 +255,18 @@ with tab1:
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중...**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 
-                status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 🎥 자연스러운 동영상 생성 중... (최대 10~20분 대기) ⏳**")
+                # 💡 진짜 사람처럼 행동하도록 프롬프트를 초강력으로 세팅
+                eng_prompt = f"A highly realistic, live-action video of a Korean person. {prompt_topic}. The person is acting very naturally, breathing, blinking, and moving their body like a real human. Extremely lifelike movement."
                 
-                # 💡 사진 대체를 아예 빼버리고, 진짜 비디오(Runway)가 나올 때까지 무조건 기다리게 만듭니다.
-                visual_url, vid_status = call_runway_video(prompt_topic, aspect_ratio, vid_length, FAL_KEY)
+                status_text.markdown(f"**[{index+1}/{len(df1)}] 🎥 KIE 비디오 시도 중... (최대 10분) ⏳**")
+                visual_url, vid_status = call_kie_video(eng_prompt, aspect_ratio, vid_length, KIE_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    st.error(f"비디오 생성 에러: fal.ai 크레딧이 없거나 서버 장애입니다. ({vid_status})")
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 지연! fal.ai 비디오 시도 중... ⏳**")
+                    visual_url, fal_vid_status = call_fal_video(eng_prompt, aspect_ratio, FAL_KEY)
+                
+                if not visual_url or "http" not in visual_url:
+                    st.error(f"비디오 생성 에러: KIE와 fal.ai 모두 크레딧이 없거나 서버 장애입니다. 꼭 크레딧을 확인해 주세요!")
                     continue
                 
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 음성 생성 중...**")
@@ -226,7 +283,7 @@ with tab2: st.info("대기열 등록 완료")
 with tab3: st.info("렌더링 시작...")
 
 with tab4:
-    st.subheader("📑 최종 영상(MP4) 자동 병합 (자연스러운 모션 유지)")
+    st.subheader("📑 최종 영상(MP4) 자동 병합 (자연스러운 모션 및 자막 유지)")
     
     file4 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f4")
     
@@ -289,6 +346,7 @@ with tab4:
                         
                     video_clip = video_clip.set_audio(audio_clip)
                     
+                    # 완벽한 상태의 자막을 그대로 유지
                     subtitle_clips = create_dynamic_subtitles(script_text, video_clip.w, video_clip.h, video_clip.duration)
                     
                     if subtitle_clips:
