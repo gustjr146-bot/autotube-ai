@@ -4,6 +4,7 @@ import requests
 import json
 import time
 import os
+import re
 import urllib.request
 import math
 import numpy as np
@@ -21,8 +22,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (동영상 안전 다운로드 마스터)")
-st.markdown("대본, **투트랙 진짜 동영상(KIE/fal.ai)**, 음성 생성부터 **다운로드 에러 방지 자막 병합**까지 지원합니다.")
+st.title("🎬 AutoTube Studio AI (자연스러운 동영상 + 완벽 싱크 자막)")
+st.markdown("대본 정제, **투트랙 진짜 동영상(KIE/fal.ai)**, 음성 생성부터 **다운로드 에러 방지 및 2/5 위치 자막 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -33,6 +34,13 @@ if not os.path.exists(FONT_PATH):
 # ==========================================
 # 2. API 연동 함수 정의
 # ==========================================
+# 💡 [핵심] 대본 안의 (0:00 - 0:05) 같은 타임코드와 특수문자를 자동으로 지워주는 함수!
+def clean_script(text):
+    text = re.sub(r'\(\d+:\d+\s*-\s*\d+:\d+\)', '', text) # 타임코드 제거
+    text = re.sub(r'\[\d+:\d+\s*-\s*\d+:\d+\]', '', text) 
+    text = text.replace('\n', ' ').strip()
+    return text
+
 def call_groq(prompt, api_key):
     if not api_key: return "Groq 에러: API 키 없음"
     api_key = api_key.strip()
@@ -41,7 +49,7 @@ def call_groq(prompt, api_key):
     payload = {
         "model": "llama-3.3-70b-versatile",  
         "messages": [
-            {"role": "system", "content": "당신은 한국어 유튜브 전문 작가입니다. 대본 본문만 짧고 명확하게 작성해 주세요."},
+            {"role": "system", "content": "당신은 한국어 유튜브 쇼츠 전문 작가입니다. 대본 본문만 짧고 명확하게 작성해 주세요. 타임코드나 지시어는 절대 넣지 마세요."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -49,7 +57,8 @@ def call_groq(prompt, api_key):
     }
     try:
         res = requests.post(url, headers=headers, json=payload)
-        if res.status_code == 200: return res.json()['choices'][0]['message']['content']
+        if res.status_code == 200: 
+            return clean_script(res.json()['choices'][0]['message']['content'])
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
@@ -70,7 +79,6 @@ def call_kie_video(prompt, aspect_ratio, duration, api_key):
     try:
         create_res = requests.post(create_url, headers=headers, json=payload)
         if create_res.status_code != 200: return None, f"거부({create_res.status_code})"
-        
         data = create_res.json().get('data')
         if not data: return None, "에러"
         task_id = data.get('taskId')
@@ -84,14 +92,9 @@ def call_kie_video(prompt, aspect_ratio, duration, api_key):
             
             state = str(poll_data_inner.get('state', '')).lower()
             if state in ['success', 'completed', 'done']:
-                res_json = poll_data_inner.get('resultJson', '{}')
-                if isinstance(res_json, str):
-                    try: res_json = json.loads(res_json)
-                    except: res_json = {}
-                urls = res_json.get('resultUrls', [])
+                urls = poll_data_inner.get('resultJson', {}).get('resultUrls', []) if isinstance(poll_data_inner.get('resultJson'), dict) else json.loads(poll_data_inner.get('resultJson', '{}')).get('resultUrls', [])
                 if urls: return urls[0], "성공"
-            elif state in ['failed', 'error']:
-                return None, "실패"
+            elif state in ['failed', 'error']: return None, "실패"
         return None, "시간 초과"
     except Exception as e: return None, str(e)
 
@@ -100,11 +103,7 @@ def call_fal_video(prompt, aspect_ratio, api_key):
     api_key = api_key.strip()
     url = "https://queue.fal.run/fal-ai/kling-video/v1/standard/text-to-video"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "prompt": prompt,
-        "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9",
-        "duration": "5"
-    }
+    payload = {"prompt": prompt, "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9", "duration": "5"}
     try:
         create_res = requests.post(url, headers=headers, json=payload)
         if create_res.status_code != 200: return None, f"거부({create_res.status_code})"
@@ -114,8 +113,7 @@ def call_fal_video(prompt, aspect_ratio, api_key):
             time.sleep(5)
             poll_res = requests.get(response_url, headers=headers)
             if poll_res.status_code == 200:
-                result_data = poll_res.json()
-                video_url = result_data.get('video', {}).get('url')
+                video_url = poll_res.json().get('video', {}).get('url')
                 if video_url: return video_url, "성공"
         return None, "시간 초과"
     except Exception as e: return None, str(e)
@@ -125,7 +123,9 @@ def call_fal_tts(script, api_key):
     api_key = api_key.strip()
     url = "https://queue.fal.run/fal-ai/elevenlabs/tts/turbo-v2.5"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    payload = {"text": script[:500] if len(script) > 500 else script}
+    # TTS 생성 전 스크립트 한 번 더 정제
+    clean_text = clean_script(script)
+    payload = {"text": clean_text[:500] if len(clean_text) > 500 else clean_text}
     try:
         create_res = requests.post(url, headers=headers, json=payload)
         if create_res.status_code != 200: return f"fal 거부"
@@ -139,27 +139,24 @@ def call_fal_tts(script, api_key):
         return "fal 시간 초과"
     except Exception: return f"fal 통신 에러"
 
-# 💡 [핵심 업데이트] 동영상 깨짐 및 다운로드 멈춤을 완벽 방어하는 모듈!
 def download_file(url, save_path):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         response = requests.get(url, headers=headers, stream=True, timeout=60)
-        response.raise_for_status() # 인터넷 연결 에러 사전 차단
-        
+        response.raise_for_status() 
         with open(save_path, 'wb') as out_file:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk: out_file.write(chunk)
-                
-        # 💡 다운로드된 파일이 빈 껍데기(Corrupted)인지 검사합니다.
         if os.path.getsize(save_path) < 1024:
             raise Exception("다운로드된 파일이 비정상적으로 작거나 손상되었습니다.")
-            
     except Exception as e:
         raise Exception(f"안전 다운로드 실패: {e}")
 
+# 💡 고객님이 원하시는 2/5 (60%) 위치와 완벽한 자막 싱크 적용
 def create_dynamic_subtitles(text, video_width, video_height, duration):
     try:
-        words = text.replace('\n', ' ').split()
+        clean_text = clean_script(text)
+        words = clean_text.split()
         chunks = []
         curr = ""
         for w in words:
@@ -198,9 +195,11 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
             img_np = np.array(img)
             txt_clip = ImageClip(img_np).set_duration(chunk_duration).set_start(start_time)
             
-            subtitle_y = video_height * 0.75
+            # 자막 위치: 아래에서 2/5 지점 (위에서 60% 높이)
+            subtitle_y = video_height * 0.60
             txt_clip = txt_clip.set_position(('center', subtitle_y))
             clips.append(txt_clip)
+            
             start_time += chunk_duration
             
         return clips
@@ -248,7 +247,9 @@ with tab1:
                 if vid_length not in ['5', '10']: vid_length = '5'
                 
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중...**")
-                ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
+                # 💡 대본 생성
+                raw_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠. 길이는 짧게 10초 분량만. 타임코드 금지.)", GROQ_KEY)
+                ai_script = clean_script(raw_script)
                 
                 eng_prompt = f"A highly realistic, live-action video of a Korean person. {prompt_topic}. The person is acting very naturally, breathing, blinking, and moving their body like a real human. Extremely lifelike movement."
                 
@@ -291,7 +292,8 @@ with tab4:
                 
             for index, row in df4.iterrows():
                 topic = str(row.get('주제', f'video_{index}'))
-                script_text = str(row.get('대본', ''))
+                # 💡 병합 전에도 엑셀의 대본을 한 번 더 깨끗하게 정제합니다!
+                script_text = clean_script(str(row.get('대본', '')))
                 vis_url = str(row.get('비디오', row.get('이미지', '')))
                 audio_url = str(row.get('음성', ''))
                 
@@ -310,7 +312,6 @@ with tab4:
                     audio_path = f"temp_audio_{index}.mp3"
                     output_path = f"output_videos/result_sub_{index}.mp4"
                     
-                    # 💡 새로 적용된 강력한 안전 다운로드 실행
                     download_file(vis_url, temp_vis_path)
                     download_file(audio_url, audio_path)
                     
@@ -321,7 +322,6 @@ with tab4:
                         w, h = video_clip.size
                         video_clip = video_clip.resize(newsize=(w - w % 2, h - h % 2))
                         
-                        # 💡 [핵심] AI 동영상의 코덱이 불안정해 핑퐁(역재생) 에러가 나더라도 무조건 성공하는 방어 코드
                         if video_clip.duration < audio_clip.duration:
                             try:
                                 reversed_clip = video_clip.fx(vfx.time_mirror)
@@ -329,7 +329,6 @@ with tab4:
                                 num_loops = math.ceil(audio_clip.duration / ping_pong_clip.duration)
                                 video_clip = concatenate_videoclips([ping_pong_clip] * num_loops)
                             except Exception:
-                                # 역재생이 튕기면, 에러 내지 말고 기본 이어붙이기로 안전하게 넘김!
                                 num_loops = math.ceil(audio_clip.duration / video_clip.duration)
                                 video_clip = concatenate_videoclips([video_clip] * num_loops)
                                 
@@ -362,7 +361,7 @@ with tab4:
                         st.download_button(f"💾 '{topic}' 다운로드", data=v_file, file_name=f"{topic}.mp4", mime="video/mp4", key=f"dl_{index}")
                         
                 except Exception as e:
-                    st.error(f"합성 에러 발생: {e} - 파일이 손상되었거나 서버 응답이 지연되었습니다.")
+                    st.error(f"합성 에러 발생: {e}")
                 
                 progress_bar.progress((index + 1) / len(df4))
                 
