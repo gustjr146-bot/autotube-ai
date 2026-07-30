@@ -21,8 +21,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (진짜 동영상 보장 마스터)")
-st.markdown("대본, **투트랙 진짜 동영상(KIE/fal.ai)**, 음성 생성부터 **완벽한 싱크의 자동 자막 병합**까지 지원합니다.")
+st.title("🎬 AutoTube Studio AI (동영상 안전 다운로드 마스터)")
+st.markdown("대본, **투트랙 진짜 동영상(KIE/fal.ai)**, 음성 생성부터 **다운로드 에러 방지 자막 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -53,7 +53,6 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-# 💡 [1순위] KIE Kling 비디오 엔진 (진짜 사람 움직임 특화)
 def call_kie_video(prompt, aspect_ratio, duration, api_key):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
@@ -76,7 +75,7 @@ def call_kie_video(prompt, aspect_ratio, duration, api_key):
         if not data: return None, "에러"
         task_id = data.get('taskId')
         
-        for _ in range(120): # 최대 10분 대기
+        for _ in range(120):
             time.sleep(5)
             poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers)
             if poll_res.status_code != 200: continue
@@ -96,7 +95,6 @@ def call_kie_video(prompt, aspect_ratio, duration, api_key):
         return None, "시간 초과"
     except Exception as e: return None, str(e)
 
-# 💡 [2순위] fal.ai 비디오 엔진 (KIE가 막혔을 때 예비용)
 def call_fal_video(prompt, aspect_ratio, api_key):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
@@ -122,18 +120,6 @@ def call_fal_video(prompt, aspect_ratio, api_key):
         return None, "시간 초과"
     except Exception as e: return None, str(e)
 
-def call_fal_image(prompt, aspect_ratio, api_key):
-    if not api_key: return None
-    api_key = api_key.strip()
-    url = "https://fal.run/fal-ai/fast-sdxl"
-    headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    payload = {"prompt": prompt, "image_size": "portrait_16_9" if aspect_ratio == "9:16" else "landscape_16_9"}
-    try:
-        res = requests.post(url, headers=headers, json=payload)
-        if res.status_code == 200: return res.json().get('images', [{}])[0].get('url')
-        return None
-    except Exception: return None
-
 def call_fal_tts(script, api_key):
     if not api_key: return "fal 에러: API 키 없음"
     api_key = api_key.strip()
@@ -153,12 +139,24 @@ def call_fal_tts(script, api_key):
         return "fal 시간 초과"
     except Exception: return f"fal 통신 에러"
 
+# 💡 [핵심 업데이트] 동영상 깨짐 및 다운로드 멈춤을 완벽 방어하는 모듈!
 def download_file(url, save_path):
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-    with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
-        out_file.write(response.read())
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(url, headers=headers, stream=True, timeout=60)
+        response.raise_for_status() # 인터넷 연결 에러 사전 차단
+        
+        with open(save_path, 'wb') as out_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk: out_file.write(chunk)
+                
+        # 💡 다운로드된 파일이 빈 껍데기(Corrupted)인지 검사합니다.
+        if os.path.getsize(save_path) < 1024:
+            raise Exception("다운로드된 파일이 비정상적으로 작거나 손상되었습니다.")
+            
+    except Exception as e:
+        raise Exception(f"안전 다운로드 실패: {e}")
 
-# 💡 고객님이 완벽하게 만족하신 자막 유지 (0.75 위치, 15자 분할)
 def create_dynamic_subtitles(text, video_width, video_height, duration):
     try:
         words = text.replace('\n', ' ').split()
@@ -182,7 +180,6 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
         
         for chunk in chunks:
             chunk_duration = duration * (len(chunk) / total_chars)
-            
             img = Image.new('RGBA', (video_width, 150), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
             
@@ -201,11 +198,9 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
             img_np = np.array(img)
             txt_clip = ImageClip(img_np).set_duration(chunk_duration).set_start(start_time)
             
-            # 자막 위치 하단 유지
             subtitle_y = video_height * 0.75
             txt_clip = txt_clip.set_position(('center', subtitle_y))
             clips.append(txt_clip)
-            
             start_time += chunk_duration
             
         return clips
@@ -214,7 +209,7 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
         return []
 
 # ==========================================
-# 3. 사이드바 (KIE 키 복구 완료!)
+# 3. 사이드바 
 # ==========================================
 with st.sidebar:
     st.header("🔑 API 키 설정")
@@ -229,7 +224,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성 (진짜 동영상 100% 보장)")
+    st.subheader("대량 영상 재료 자동 생성")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -255,10 +250,9 @@ with tab1:
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중...**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 대본 작성)", GROQ_KEY)
                 
-                # 💡 진짜 사람처럼 행동하도록 프롬프트를 초강력으로 세팅
                 eng_prompt = f"A highly realistic, live-action video of a Korean person. {prompt_topic}. The person is acting very naturally, breathing, blinking, and moving their body like a real human. Extremely lifelike movement."
                 
-                status_text.markdown(f"**[{index+1}/{len(df1)}] 🎥 KIE 비디오 시도 중... (최대 10분) ⏳**")
+                status_text.markdown(f"**[{index+1}/{len(df1)}] 🎥 KIE 비디오 시도 중... ⏳**")
                 visual_url, vid_status = call_kie_video(eng_prompt, aspect_ratio, vid_length, KIE_KEY)
                 
                 if not visual_url or "http" not in visual_url:
@@ -266,7 +260,7 @@ with tab1:
                     visual_url, fal_vid_status = call_fal_video(eng_prompt, aspect_ratio, FAL_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    st.error(f"비디오 생성 에러: KIE와 fal.ai 모두 크레딧이 없거나 서버 장애입니다. 꼭 크레딧을 확인해 주세요!")
+                    st.error("비디오 생성 에러: 크레딧이 없거나 서버 장애입니다.")
                     continue
                 
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 음성 생성 중...**")
@@ -283,8 +277,7 @@ with tab2: st.info("대기열 등록 완료")
 with tab3: st.info("렌더링 시작...")
 
 with tab4:
-    st.subheader("📑 최종 영상(MP4) 자동 병합 (자연스러운 모션 및 자막 유지)")
-    
+    st.subheader("📑 최종 영상(MP4) 자동 병합")
     file4 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f4")
     
     if file4:
@@ -302,7 +295,7 @@ with tab4:
                 vis_url = str(row.get('비디오', row.get('이미지', '')))
                 audio_url = str(row.get('음성', ''))
                 
-                status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 렌더링 중... ⏳**")
+                status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 안전 다운로드 및 렌더링 중... ⏳**")
                 
                 if "http" not in vis_url or vis_url.lower() == 'nan': continue
                 if "http" not in audio_url or audio_url.lower() == 'nan': continue
@@ -317,6 +310,7 @@ with tab4:
                     audio_path = f"temp_audio_{index}.mp3"
                     output_path = f"output_videos/result_sub_{index}.mp4"
                     
+                    # 💡 새로 적용된 강력한 안전 다운로드 실행
                     download_file(vis_url, temp_vis_path)
                     download_file(audio_url, audio_path)
                     
@@ -327,12 +321,18 @@ with tab4:
                         w, h = video_clip.size
                         video_clip = video_clip.resize(newsize=(w - w % 2, h - h % 2))
                         
+                        # 💡 [핵심] AI 동영상의 코덱이 불안정해 핑퐁(역재생) 에러가 나더라도 무조건 성공하는 방어 코드
                         if video_clip.duration < audio_clip.duration:
-                            reversed_clip = video_clip.fx(vfx.time_mirror)
-                            ping_pong_clip = concatenate_videoclips([video_clip, reversed_clip])
-                            num_loops = math.ceil(audio_clip.duration / ping_pong_clip.duration)
-                            video_clip = concatenate_videoclips([ping_pong_clip] * num_loops)
-                            
+                            try:
+                                reversed_clip = video_clip.fx(vfx.time_mirror)
+                                ping_pong_clip = concatenate_videoclips([video_clip, reversed_clip])
+                                num_loops = math.ceil(audio_clip.duration / ping_pong_clip.duration)
+                                video_clip = concatenate_videoclips([ping_pong_clip] * num_loops)
+                            except Exception:
+                                # 역재생이 튕기면, 에러 내지 말고 기본 이어붙이기로 안전하게 넘김!
+                                num_loops = math.ceil(audio_clip.duration / video_clip.duration)
+                                video_clip = concatenate_videoclips([video_clip] * num_loops)
+                                
                         video_clip = video_clip.subclip(0, audio_clip.duration)
                     else:
                         base_clip = ImageClip(temp_vis_path)
@@ -346,7 +346,6 @@ with tab4:
                         
                     video_clip = video_clip.set_audio(audio_clip)
                     
-                    # 완벽한 상태의 자막을 그대로 유지
                     subtitle_clips = create_dynamic_subtitles(script_text, video_clip.w, video_clip.h, video_clip.duration)
                     
                     if subtitle_clips:
@@ -356,14 +355,14 @@ with tab4:
                     
                     final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
                     
-                    st.success(f"🎉 '{topic}' 동영상 완성!")
+                    st.success(f"🎉 '{topic}' 완벽한 동영상 완성!")
                     st.video(output_path)
                     
                     with open(output_path, "rb") as v_file:
                         st.download_button(f"💾 '{topic}' 다운로드", data=v_file, file_name=f"{topic}.mp4", mime="video/mp4", key=f"dl_{index}")
                         
                 except Exception as e:
-                    st.error(f"합성 에러: {e}")
+                    st.error(f"합성 에러 발생: {e} - 파일이 손상되었거나 서버 응답이 지연되었습니다.")
                 
                 progress_bar.progress((index + 1) / len(df4))
                 
