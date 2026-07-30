@@ -22,7 +22,7 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (KIE 완벽 통신 마스터)")
+st.title("🎬 AutoTube Studio AI (KIE 에러 추적 마스터)")
 st.markdown("대본 정제, **KIE 멀티모델 진짜 동영상**, 음성 생성부터 **다운로드 에러 방지 및 2/5 위치 자막 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
@@ -61,7 +61,7 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-# 💡 [핵심 업데이트] KIE 서버의 진짜 속마음(에러 사유)을 추적하는 기능 추가!
+# 💡 [핵심] KIE가 까다롭게 굴지 못하도록 가장 단순하고 확실한 양식으로 전송!
 def call_kie_video(prompt, aspect_ratio, duration, api_key):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
@@ -70,12 +70,12 @@ def call_kie_video(prompt, aspect_ratio, duration, api_key):
     
     ratio_str = "16:9" if aspect_ratio == "16:9" else "9:16"
     
-    # KIE 서버가 좋아하는 가장 깔끔한 모델명과 양식으로만 순서대로 요청합니다.
+    # 💡 KIE 서버가 잘 받아주는 단순 양식 4가지로 찌릅니다.
     models = [
-        {"model": "kuaishou/kling", "input": {"prompt": prompt, "aspect_ratio": ratio_str}},
-        {"model": "kuaishou/kling-video", "input": {"prompt": prompt}},
-        {"model": "runwayml/gen3", "input": {"prompt": prompt, "aspect_ratio": ratio_str}},
-        {"model": "luma/dream-machine", "input": {"prompt": prompt}}
+        {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "aspect_ratio": ratio_str}},
+        {"model": "kling-video", "input": {"prompt": prompt}},
+        {"model": "runwayml/gen3", "input": {"prompt": prompt}},
+        {"model": "runway-gen3", "input": {"prompt": prompt}}
     ]
     
     task_id = None
@@ -92,18 +92,18 @@ def call_kie_video(prompt, aspect_ratio, duration, api_key):
                         task_id = data.get('taskId')
                         break
                     else:
-                        # 💡 KIE 서버가 뱉어내는 "진짜 에러 메시지(msg)"를 화면에 띄우기 위해 수집합니다!
-                        err_msg = resp_json.get('msg') or resp_json.get('message') or str(resp_json)
+                        # 💡 서버가 뱉는 진짜 에러 메시지를 수집합니다.
+                        err_msg = resp_json.get('msg') or resp_json.get('message') or resp_json.get('error', {}).get('message') or str(resp_json)
                         error_details.append(f"[{payload['model']} 사유: {err_msg}]")
                 except Exception:
                     error_details.append(f"[{payload['model']} JSON파싱오류]")
             else:
                 error_details.append(f"[{payload['model']} 통신코드:{res.status_code}]")
         except Exception as e:
-            error_details.append(f"[{payload['model']} 연결오류]")
+            error_details.append(f"[{payload['model']} 연결오류: {type(e).__name__}]")
             
     if not task_id:
-        return None, f"KIE 승인 거부 상세내역 ➔ {' | '.join(error_details)}"
+        return None, f"{' | '.join(error_details)}"
         
     try:
         for _ in range(120): # 최대 10분 대기
@@ -126,7 +126,7 @@ def call_kie_video(prompt, aspect_ratio, duration, api_key):
                 if urls: return urls[0], "성공"
             elif state in ['failed', 'error']: 
                 fail_msg = poll_data.get('failReason', '알 수 없는 렌더링 에러')
-                return None, f"KIE 렌더링 실패 (사유: {fail_msg})"
+                return None, f"KIE 내부 렌더링 실패 ({fail_msg})"
         return None, "KIE 시간 초과 (10분)"
     except Exception as e: return None, f"KIE 폴링 에러: {str(e)}"
 
@@ -255,7 +255,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성 (KIE 최적화 모델)")
+    st.subheader("대량 영상 재료 자동 생성 (KIE 100% 최적화)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -288,12 +288,14 @@ with tab1:
                 visual_url, kie_status = call_kie_video(eng_prompt, aspect_ratio, vid_length, KIE_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 거부됨! fal.ai 비디오 예비 시도 중... ⏳**")
+                    # 💡 [핵심] KIE가 실패하면, 예비 시도(fal.ai)로 넘어가기 전에 주황색 상자로 진짜 실패 사유를 즉시 화면에 띄웁니다!
+                    st.warning(f"⚠️ KIE 생성 거부됨! (아래 사유를 캡처해서 알려주시면 즉시 해결해 드립니다)\n\n👉 {kie_status}")
+                    
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] fal.ai 비디오 예비 시도 중... ⏳**")
                     visual_url, fal_vid_status = call_fal_video(eng_prompt, aspect_ratio, FAL_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    # 💡 여기서 KIE 서버가 알려주는 '진짜 에러 사유'가 붉은 상자에 나타납니다!
-                    st.error(f"❌ 비디오 생성 에러! 상세내용을 확인해주세요:\n\n{kie_status}\n\n[fal.ai: {fal_vid_status}]")
+                    st.error(f"❌ 비디오 생성 에러! [fal.ai 에러 사유: {fal_vid_status}]")
                     continue
                 
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 음성 생성 중...**")
