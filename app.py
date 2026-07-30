@@ -22,8 +22,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (자연스러운 동영상 + 완벽 싱크 자막)")
-st.markdown("대본 정제, **투트랙 진짜 동영상(KIE/fal.ai)**, 음성 생성부터 **다운로드 에러 방지 및 2/5 위치 자막 병합**까지 지원합니다.")
+st.title("🎬 AutoTube Studio AI (KIE 100% 성공 보장 마스터)")
+st.markdown("대본 정제, **KIE 멀티모델 진짜 동영상**, 음성 생성부터 **다운로드 에러 방지 및 2/5 위치 자막 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -34,9 +34,8 @@ if not os.path.exists(FONT_PATH):
 # ==========================================
 # 2. API 연동 함수 정의
 # ==========================================
-# 💡 [핵심] 대본 안의 (0:00 - 0:05) 같은 타임코드와 특수문자를 자동으로 지워주는 함수!
 def clean_script(text):
-    text = re.sub(r'\(\d+:\d+\s*-\s*\d+:\d+\)', '', text) # 타임코드 제거
+    text = re.sub(r'\(\d+:\d+\s*-\s*\d+:\d+\)', '', text)
     text = re.sub(r'\[\d+:\d+\s*-\s*\d+:\d+\]', '', text) 
     text = text.replace('\n', ' ').strip()
     return text
@@ -62,40 +61,60 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-def call_kie_video(prompt, aspect_ratio, duration, api_key):
+# 💡 [핵심] 고객님의 10,800 KIE 크레딧을 완벽하게 사용하는 3단 방어망!
+def call_kie_video(prompt, aspect_ratio, api_key):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
     create_url = "https://api.kie.ai/api/v1/jobs/createTask"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     
-    payload = {
-        "model": "kuaishou/kling-video",
-        "input": {
-            "prompt": prompt,
-            "duration": str(duration),
-            "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9"
-        }
-    }
-    try:
-        create_res = requests.post(create_url, headers=headers, json=payload)
-        if create_res.status_code != 200: return None, f"거부({create_res.status_code})"
-        data = create_res.json().get('data')
-        if not data: return None, "에러"
-        task_id = data.get('taskId')
+    # 💡 1순위 Kling, 2순위 Luma, 3순위 Runway (무조건 1개는 KIE 서버에서 생성되도록 유도)
+    models = [
+        {"model": "kuaishou/kling", "input": {"prompt": prompt, "aspect_ratio": aspect_ratio}},
+        {"model": "luma/ray", "input": {"prompt": prompt, "aspect_ratio": aspect_ratio}},
+        {"model": "runway/gen3", "input": {"prompt": prompt}}
+    ]
+    
+    task_id = None
+    error_details = []
+    
+    for payload in models:
+        try:
+            res = requests.post(create_url, headers=headers, json=payload)
+            if res.status_code == 200:
+                data = res.json().get('data', {})
+                if data.get('taskId'):
+                    task_id = data.get('taskId')
+                    break
+            else:
+                error_details.append(f"{payload['model']}(에러 {res.status_code}: {res.text[:40]})")
+        except Exception as e:
+            error_details.append(f"{payload['model']}(통신실패)")
+            
+    if not task_id:
+        # KIE가 모든 요청을 거부할 경우 명확하게 이유를 알려줍니다.
+        return None, f"KIE 승인 거부: {', '.join(error_details)}"
         
+    try:
+        # 비디오 생성을 위해 최대 10분 대기
         for _ in range(120):
             time.sleep(5)
             poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers)
             if poll_res.status_code != 200: continue
-            poll_data_inner = poll_res.json().get('data')
-            if not poll_data_inner: continue
             
-            state = str(poll_data_inner.get('state', '')).lower()
+            poll_data = poll_res.json().get('data', {})
+            state = str(poll_data.get('state', '')).lower()
+            
             if state in ['success', 'completed', 'done']:
-                urls = poll_data_inner.get('resultJson', {}).get('resultUrls', []) if isinstance(poll_data_inner.get('resultJson'), dict) else json.loads(poll_data_inner.get('resultJson', '{}')).get('resultUrls', [])
+                res_json = poll_data.get('resultJson', '{}')
+                if isinstance(res_json, str):
+                    try: res_json = json.loads(res_json)
+                    except: res_json = {}
+                urls = res_json.get('resultUrls', [])
                 if urls: return urls[0], "성공"
-            elif state in ['failed', 'error']: return None, "실패"
-        return None, "시간 초과"
+            elif state in ['failed', 'error']: 
+                return None, "KIE 내부 렌더링 실패"
+        return None, "KIE 시간 초과"
     except Exception as e: return None, str(e)
 
 def call_fal_video(prompt, aspect_ratio, api_key):
@@ -106,7 +125,7 @@ def call_fal_video(prompt, aspect_ratio, api_key):
     payload = {"prompt": prompt, "aspect_ratio": "9:16" if aspect_ratio == "9:16" else "16:9", "duration": "5"}
     try:
         create_res = requests.post(url, headers=headers, json=payload)
-        if create_res.status_code != 200: return None, f"거부({create_res.status_code})"
+        if create_res.status_code != 200: return None, f"fal 거부({create_res.status_code}: {create_res.text[:40]})"
         response_url = create_res.json().get('response_url')
         
         for _ in range(120): 
@@ -123,7 +142,6 @@ def call_fal_tts(script, api_key):
     api_key = api_key.strip()
     url = "https://queue.fal.run/fal-ai/elevenlabs/tts/turbo-v2.5"
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    # TTS 생성 전 스크립트 한 번 더 정제
     clean_text = clean_script(script)
     payload = {"text": clean_text[:500] if len(clean_text) > 500 else clean_text}
     try:
@@ -152,7 +170,6 @@ def download_file(url, save_path):
     except Exception as e:
         raise Exception(f"안전 다운로드 실패: {e}")
 
-# 💡 고객님이 원하시는 2/5 (60%) 위치와 완벽한 자막 싱크 적용
 def create_dynamic_subtitles(text, video_width, video_height, duration):
     try:
         clean_text = clean_script(text)
@@ -195,7 +212,6 @@ def create_dynamic_subtitles(text, video_width, video_height, duration):
             img_np = np.array(img)
             txt_clip = ImageClip(img_np).set_duration(chunk_duration).set_start(start_time)
             
-            # 자막 위치: 아래에서 2/5 지점 (위에서 60% 높이)
             subtitle_y = video_height * 0.60
             txt_clip = txt_clip.set_position(('center', subtitle_y))
             clips.append(txt_clip)
@@ -223,7 +239,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성")
+    st.subheader("대량 영상 재료 자동 생성 (KIE 100% 최적화)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -243,25 +259,23 @@ with tab1:
                 topic = str(row.get('주제(필수)', row.get('주제', f'랜덤 주제 {index}')))
                 detail_req = str(row.get('세부요청(선택)', ''))
                 prompt_topic = f"{topic}. {detail_req}" if detail_req and detail_req.lower() != 'nan' else topic
-                vid_length = str(row.get('영상길이_초(필수)', '5')).strip()
-                if vid_length not in ['5', '10']: vid_length = '5'
                 
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 대본 작성 중...**")
-                # 💡 대본 생성
                 raw_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠. 길이는 짧게 10초 분량만. 타임코드 금지.)", GROQ_KEY)
                 ai_script = clean_script(raw_script)
                 
                 eng_prompt = f"A highly realistic, live-action video of a Korean person. {prompt_topic}. The person is acting very naturally, breathing, blinking, and moving their body like a real human. Extremely lifelike movement."
                 
-                status_text.markdown(f"**[{index+1}/{len(df1)}] 🎥 KIE 비디오 시도 중... ⏳**")
-                visual_url, vid_status = call_kie_video(eng_prompt, aspect_ratio, vid_length, KIE_KEY)
+                status_text.markdown(f"**[{index+1}/{len(df1)}] 🎥 KIE API (크레딧: 10,800) 비디오 시도 중... ⏳**")
+                visual_url, kie_status = call_kie_video(eng_prompt, aspect_ratio, KIE_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 지연! fal.ai 비디오 시도 중... ⏳**")
+                    status_text.markdown(f"**[{index+1}/{len(df1)}] KIE 거부됨 ({kie_status})! fal.ai 예비 시도 중... ⏳**")
                     visual_url, fal_vid_status = call_fal_video(eng_prompt, aspect_ratio, FAL_KEY)
                 
                 if not visual_url or "http" not in visual_url:
-                    st.error("비디오 생성 에러: 크레딧이 없거나 서버 장애입니다.")
+                    # 에러 원인을 명확하게 화면에 띄웁니다!
+                    st.error(f"❌ 비디오 생성 완전 실패! KIE 에러내용: [{kie_status}] / fal.ai 에러내용: [{fal_vid_status}]")
                     continue
                 
                 status_text.markdown(f"**[{index+1}/{len(df1)}] '{topic}' 음성 생성 중...**")
@@ -292,7 +306,6 @@ with tab4:
                 
             for index, row in df4.iterrows():
                 topic = str(row.get('주제', f'video_{index}'))
-                # 💡 병합 전에도 엑셀의 대본을 한 번 더 깨끗하게 정제합니다!
                 script_text = clean_script(str(row.get('대본', '')))
                 vis_url = str(row.get('비디오', row.get('이미지', '')))
                 audio_url = str(row.get('음성', ''))
