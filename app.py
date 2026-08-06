@@ -22,8 +22,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (KIE 자동분류 마스터)")
-st.markdown("대본 정제, **KIE I2V/T2V 자동분류 진짜 동영상**, 음성 생성부터 **에러 방지 및 2/5 위치 자막 병합**까지 지원합니다.")
+st.title("🎬 AutoTube Studio AI (KIE 양식 자동매칭 마스터)")
+st.markdown("대본 정제, **KIE 다중양식 자동매칭**, 극사실적 모션, **에러 방지 및 2/5 위치 자막 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -61,44 +61,41 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-# 💡 [핵심] 레퍼런스 이미지 유무에 따라 I2V / T2V 모델을 완벽하게 자동 분류합니다!
+# 💡 [핵심] KIE 서버의 깐깐한 양식(Format) 에러를 우회하는 다중 양식 자동 매칭!
 def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
     create_url = "https://api.kie.ai/api/v1/jobs/createTask"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     
-    # KIE 서버가 100% 인식하는 Fal.ai 연동 모델명 리스트
+    ratio_str = "16:9" if aspect_ratio == "16:9" else "9:16"
+    dur_int = int(duration) if str(duration).isdigit() else 5
+    dur_str = str(dur_int)
+    
+    models_to_try = []
+    
+    # KIE 내부적으로 image_urls(배열)을 원할지, image_url(문자열)을 원할지 몰라서 모두 준비했습니다!
     if image_url:
         models_to_try = [
-            "fal-ai/kling-video/v1/standard/image-to-video",
-            "fal-ai/kling-video/v1/pro/image-to-video",
-            "kling-image-to-video"
+            {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "image_urls": [image_url], "duration": dur_int}},
+            {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "image_url": image_url, "duration": dur_int}},
+            {"model": "kling-3.0/video", "input": {"prompt": prompt, "image_urls": [image_url], "duration": dur_int}},
+            {"model": "kling-3.0/video", "input": {"prompt": prompt, "image_url": image_url, "duration": dur_int}},
+            {"model": "runwayml/gen3", "input": {"prompt": prompt, "image_url": image_url}},
+            {"model": "fal-ai/kling-video/v1/standard/image-to-video", "input": {"prompt": prompt, "image_url": image_url, "duration": dur_str}}
         ]
     else:
         models_to_try = [
-            "fal-ai/kling-video/v1/standard/text-to-video",
-            "fal-ai/kling-video/v1/pro/text-to-video",
-            "fal-ai/runway-gen3/turbo/text-to-video"
+            {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "aspect_ratio": ratio_str, "duration": dur_int}},
+            {"model": "kling-3.0/video", "input": {"prompt": prompt, "aspect_ratio": ratio_str, "duration": dur_int}},
+            {"model": "runwayml/gen3", "input": {"prompt": prompt, "aspect_ratio": ratio_str}},
+            {"model": "fal-ai/kling-video/v1/standard/text-to-video", "input": {"prompt": prompt, "aspect_ratio": ratio_str, "duration": dur_str}}
         ]
         
     task_id = None
     error_details = []
     
-    for model_name in models_to_try:
-        input_data = {
-            "prompt": prompt,
-            "duration": str(duration) if str(duration) in ["5", "10"] else "5"
-        }
-        
-        # 이미지가 있으면 비율을 빼고 이미지 주소를 넣어야 에러가 안 납니다.
-        if image_url:
-            input_data["image_url"] = image_url
-        else:
-            input_data["aspect_ratio"] = "16:9" if aspect_ratio == "16:9" else "9:16"
-            
-        payload = {"model": model_name, "input": input_data}
-        
+    for payload in models_to_try:
         try:
             res = requests.post(create_url, headers=headers, json=payload, timeout=20)
             if res.status_code == 200:
@@ -108,27 +105,30 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key):
                     task_id = data.get('taskId')
                     break
                 else:
-                    err_msg = resp_json.get('msg') or str(resp_json)
-                    error_details.append(f"[{model_name} 거부: {err_msg}]")
+                    detail = resp_json.get('detail')
+                    if isinstance(detail, list):
+                        err_msg = ", ".join([f"{d.get('msg')}" for d in detail])
+                    else:
+                        err_msg = resp_json.get('msg') or str(resp_json)
+                    error_details.append(f"[{payload['model']} 거부: {err_msg[:30]}...]")
             else:
                 try: err_msg = res.json().get('msg', res.text[:30])
                 except: err_msg = res.text[:30]
-                error_details.append(f"[{model_name} 실패: {err_msg}]")
-        except Exception as e:
-            error_details.append(f"[{model_name} 연결오류]")
+                error_details.append(f"[{payload['model']} 실패: {err_msg[:30]}...]")
+        except Exception:
+            error_details.append(f"[{payload['model']} 연결오류]")
             
     if not task_id:
         return None, f"KIE 지원불가 ➔ {' | '.join(error_details)}"
         
     try:
-        for _ in range(120): # 10분 대기
+        for _ in range(120): # 최대 10분 대기
             time.sleep(5)
             poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers, timeout=15)
             if poll_res.status_code != 200: continue
             
             try: poll_data = poll_res.json().get('data', {})
             except: continue
-            
             if not isinstance(poll_data, dict): continue
             
             state = str(poll_data.get('state', '')).lower()
@@ -142,7 +142,7 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key):
             elif state in ['failed', 'error']: 
                 fail_msg = poll_data.get('failReason', '렌더링 에러')
                 return None, f"KIE 렌더링 실패 ({fail_msg})"
-        return None, "KIE 시간 초과"
+        return None, "KIE 시간 초과 (10분)"
     except Exception as e: return None, f"KIE 폴링 에러: {str(e)}"
 
 def call_fal_video(prompt, aspect_ratio, duration, image_url, api_key):
@@ -276,7 +276,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성 (KIE 자동분류 마스터)")
+    st.subheader("대량 영상 재료 자동 생성 (KIE 양식 자동매칭 마스터)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -297,7 +297,7 @@ with tab1:
                 detail_req = str(row.get('세부요청(선택)', ''))
                 prompt_topic = f"{topic}. {detail_req}" if detail_req and detail_req.lower() != 'nan' else topic
                 
-                # 💡 [핵심] 레퍼런스 이미지 URL 추출
+                # 레퍼런스 이미지 URL 완벽 추출
                 ref_image = str(row.get('레퍼런스이미지 URL(선택)', row.get('레퍼런스이미지 URL', ''))).strip()
                 if ref_image.lower() in ['nan', '', 'none'] or not ref_image.startswith('http'):
                     ref_image = None
@@ -309,10 +309,10 @@ with tab1:
                 raw_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠. 길이는 짧게 10초 분량만. 타임코드 금지.)", GROQ_KEY)
                 ai_script = clean_script(raw_script)
                 
-                # 💡 [핵심] 정지된 사진을 차단하고, 생동감 넘치는 움직임을 무조건 강제하는 극사실주의 프롬프트!
-                eng_prompt = f"A highly photorealistic, cinematic live-action video of a Korean person. {prompt_topic}. The subject MUST exhibit extremely natural human behavior: smooth breathing, natural blinking, and clear head or body movements. Make the movement highly visible, dynamic, and lifelike. Absolutely NO static images."
+                # 💡 [가장 중요한 모션 프롬프트] AI가 절대 사진을 멈춰두지 못하게 생동감 있는 움직임을 강제합니다!
+                eng_prompt = f"Highly cinematic, ultra-realistic live-action footage of a Korean person. {prompt_topic}. The subject is a REAL living human. They MUST exhibit extremely natural human behavior: visible breathing, natural eye blinking, and dynamic fluid movements of the head and body. Absolutely NO static or frozen images. High motion, lifelike energy, masterpiece."
                 
-                status_text.markdown(f"**[{index+1}/{len(df1)}] 🎥 KIE API (사진/텍스트 자동분류) 시도 중... ⏳**")
+                status_text.markdown(f"**[{index+1}/{len(df1)}] 🎥 KIE API (양식 자동 매칭) 시도 중... ⏳**")
                 visual_url, kie_status = call_kie_video(eng_prompt, aspect_ratio, vid_length, ref_image, KIE_KEY)
                 
                 if not visual_url or "http" not in visual_url:
