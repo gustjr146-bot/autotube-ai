@@ -61,8 +61,7 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-# 💡 [핵심] 상태 문자열을 믿지 않고, 서버 응답에 "비디오 주소(MP4)"가 나타나면 즉시 낚아채는 초정밀 센서!
-def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_idx):
+def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
     create_url = "https://api.kie.ai/api/v1/jobs/createTask"
@@ -110,8 +109,8 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
             time.sleep(5)
             elapsed = int(time.time() - start_time)
             
-            # 💡 [핵심] 화면이 멈춘 것처럼 보이지 않게 실시간 초 타이머를 띄웁니다!
-            status_text.markdown(f"**[{current_idx}/{total_idx}] 🎥 KIE 서버 렌더링 진행 중... (현재 {elapsed}초 대기 중 / 최대 15분) ⏳**")
+            # 💡 [버그 수정 완료] total_idx 오타를 total_items로 완벽하게 수정했습니다.
+            status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 KIE 서버 렌더링 진행 중... (현재 {elapsed}초 대기 중 / 최대 15분) ⏳**")
             
             poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers, timeout=15)
             if poll_res.status_code != 200: continue
@@ -119,7 +118,6 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
             poll_data = poll_res.json().get('data', {})
             if not isinstance(poll_data, dict): continue
             
-            # 💡 [초정밀 센서] KIE가 "성공"이라고 말하지 않아도, 영상 URL만 있으면 무조건 즉시 다운로드!
             res_json = poll_data.get('resultJson', '{}')
             if isinstance(res_json, str):
                 try: res_json = json.loads(res_json)
@@ -136,7 +134,7 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
         return None, "KIE 시간 초과 (15분 초과)"
     except Exception as e: return None, f"KIE 폴링 에러: {str(e)}"
 
-def call_fal_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_idx):
+def call_fal_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
     dur_str = "5" if str(duration) not in ["5", "10"] else str(duration)
@@ -159,7 +157,7 @@ def call_fal_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
         for _ in range(120): # 최대 10분 대기
             time.sleep(5)
             elapsed = int(time.time() - start_time)
-            status_text.markdown(f"**[{current_idx}/{total_idx}] 🚀 Runway Gen-3 렌더링 진행 중... (현재 {elapsed}초 대기 중 / 최대 10분) ⏳**")
+            status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 Runway Gen-3 렌더링 진행 중... (현재 {elapsed}초 대기 중 / 최대 10분) ⏳**")
             
             poll_res = requests.get(response_url, headers=headers, timeout=15)
             if poll_res.status_code == 200:
@@ -304,19 +302,20 @@ with tab1:
                 vid_length = str(row.get('영상길이_초(필수)', '5')).strip()
                 if vid_length not in ['5', '10']: vid_length = '5'
                 
-                status_text.markdown(f"**[{current_idx}/{total_idx}] '{topic}' 대본 작성 중...**")
+                # 💡 [버그 수정 완료] NameError가 발생하지 않도록 {total_items} 변수로 명확하게 변경했습니다!
+                status_text.markdown(f"**[{current_idx}/{total_items}] '{topic}' 대본 작성 중...**")
                 raw_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠. 길이는 짧게 10초 분량만. 타임코드 금지.)", GROQ_KEY)
                 ai_script = clean_script(raw_script)
                 
-                # 💡 [극사실주의 모션 300% 강제] 숨 쉬기, 눈 깜빡임, 동적 움직임을 초강력 지시!
+                # 💡 [초강력 프롬프트] AI가 절대 정지 사진을 못 내놓도록 "살아있는 생명체"임을 강조했습니다!
                 eng_prompt = f"Extremely dynamic, cinematic live-action video of a Korean person. {prompt_topic}. The subject is a REAL living human. They MUST exhibit highly visible natural human behavior: deep smooth breathing, natural eye blinking, and continuous fluid movements of the head, face, and body. It must look like a high-budget real video footage. Absolutely NO static, frozen, or still images. High motion, lifelike energy."
                 
-                status_text.markdown(f"**[{current_idx}/{total_idx}] 🎥 KIE API 영상 생성 접수 중... ⏳**")
+                status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 KIE API 영상 생성 접수 중... ⏳**")
                 visual_url, kie_status = call_kie_video(eng_prompt, aspect_ratio, vid_length, ref_image, KIE_KEY, status_text, current_idx, total_items)
                 
                 if not visual_url or "http" not in visual_url:
                     st.warning(f"⚠️ KIE 거부/오류됨:\n{kie_status}")
-                    status_text.markdown(f"**[{current_idx}/{total_idx}] KIE 에러로 인한 Runway Gen-3 전환 시도 중... ⏳**")
+                    status_text.markdown(f"**[{current_idx}/{total_items}] KIE 에러로 인한 Runway Gen-3 전환 시도 중... ⏳**")
                     visual_url, fal_vid_status = call_fal_video(eng_prompt, aspect_ratio, vid_length, ref_image, FAL_KEY, status_text, current_idx, total_items)
                 
                 if not visual_url or "http" not in visual_url:
@@ -324,7 +323,7 @@ with tab1:
                     st.error(f"❌ KIE 오류: [{kie_status}] \n\n❌ Runway 오류: [{fal_vid_status}]")
                     continue
                 
-                status_text.markdown(f"**[{current_idx}/{total_idx}] '{topic}' 음성 생성 중...**")
+                status_text.markdown(f"**[{current_idx}/{total_items}] '{topic}' 음성 생성 중...**")
                 aud_url = call_fal_tts(ai_script, FAL_KEY)
                 
                 results.append({"주제": topic, "대본": ai_script, "비디오": visual_url, "음성": aud_url})
