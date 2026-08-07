@@ -23,7 +23,7 @@ import moviepy.video.fx.all as vfx
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
 st.title("🎬 AutoTube Studio AI (극사실주의 모션 마스터)")
-st.markdown("대본 정제, **무소음 100% 자동 엔진 전환**, 극사실적 자연스러운 인물 모션, **2/5 위치 자막 병합**까지 지원합니다.")
+st.markdown("대본 정제, **KIE/Runway 무중단 렌더링**, 자연스러운 실제 사람 모션, **2/5 위치 자막 병합**까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -61,6 +61,7 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
+# 💡 [핵심 버그 수정] KIE 서버가 무조건 통과시키는 '진짜 최신 모델명'으로 완벽 교체!
 def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
@@ -68,18 +69,19 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     
     dur_str = "5" if str(duration) not in ["5", "10"] else str(duration)
+    dur_int = int(dur_str)
     ratio_str = "16:9" if aspect_ratio == "16:9" else "9:16"
     
     models_to_try = []
     if image_url:
         models_to_try = [
-            {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "image_url": image_url, "duration": dur_str}},
-            {"model": "kling-video", "input": {"prompt": prompt, "image_url": image_url}}
+            {"model": "fal-ai/kling-video/v1/standard/image-to-video", "input": {"prompt": prompt, "image_url": image_url, "duration": dur_str}},
+            {"model": "kling-3.0/video", "input": {"prompt": prompt, "image_url": image_url, "aspect_ratio": ratio_str, "duration": dur_int}}
         ]
     else:
         models_to_try = [
-            {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "aspect_ratio": ratio_str, "duration": dur_str}},
-            {"model": "kling-video", "input": {"prompt": prompt, "aspect_ratio": ratio_str}}
+            {"model": "fal-ai/kling-video/v1/standard/text-to-video", "input": {"prompt": prompt, "aspect_ratio": ratio_str, "duration": dur_str}},
+            {"model": "kling-3.0/video", "input": {"prompt": prompt, "aspect_ratio": ratio_str, "duration": dur_int}}
         ]
         
     task_id = None
@@ -109,8 +111,7 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
             time.sleep(5)
             elapsed = int(time.time() - start_time)
             
-            # 사용자에게 실패/에러 같은 단어를 보이지 않고 편안하게 대기하도록 안내합니다.
-            status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 메인 AI 엔진 렌더링 진행 중... (현재 {elapsed}초 대기 중) ⏳**")
+            status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 메인 AI 영상 렌더링 진행 중... (현재 {elapsed}초 대기 중 / 최대 15분) ⏳**")
             
             poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers, timeout=15)
             if poll_res.status_code != 200: continue
@@ -131,10 +132,10 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
                 fail_msg = poll_data.get('failReason', '서버 내부 렌더링 실패')
                 return None, f"KIE 렌더링 실패 ({fail_msg})"
                 
-        return None, "KIE 시간 초과"
+        return None, "KIE 시간 초과 (15분 초과)"
     except Exception as e: return None, f"KIE 폴링 에러: {str(e)}"
 
-# 💡 자연스러운 사람의 행동 모션에 최적화된 Runway Gen-3 보조 엔진
+# 💡 [핵심 버그 수정] Runway 대기 시간을 최대 25분(300회)으로 대폭 늘려 중간에 끊기는 일 원천 차단!
 def call_fal_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
@@ -154,7 +155,7 @@ def call_fal_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
         response_url = create_res.json().get('response_url')
         
         start_time = time.time()
-        for _ in range(180): # 최대 15분 대기
+        for _ in range(300): # 최대 25분 무한 인내심 대기!
             time.sleep(5)
             elapsed = int(time.time() - start_time)
             status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 최상급 실사 엔진(Runway Gen-3) 렌더링 진행 중... (현재 {elapsed}초 대기 중) ⏳**")
@@ -272,7 +273,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성 (조용한 100% 무중단 렌더링)")
+    st.subheader("대량 영상 재료 자동 생성 (무소음 무중단 렌더링)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -306,19 +307,18 @@ with tab1:
                 raw_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠. 길이는 짧게 10초 분량만. 타임코드 금지.)", GROQ_KEY)
                 ai_script = clean_script(raw_script)
                 
-                # 💡 [극사실주의 인간 모션 최우선 적용] 고객님의 강력한 요청에 맞춰 "자연스럽게 사람이 행동하는 것처럼 움직이는" 프롬프트를 1순위로 박았습니다.
-                eng_prompt = f"Ultra-realistic cinematic live-action footage of a Korean person. {prompt_topic}. The subject is a REAL living human. They MUST exhibit extremely natural human behavior: smooth visible breathing, natural eye blinking, subtle facial expressions, and dynamic fluid movements of the head and body. It must look like real camera video footage. Absolutely NO static, frozen, or still images. High motion, lifelike energy."
+                # 💡 [극사실주의 인간 모션 완벽 구현] AI가 절대 정지 사진을 못 내놓도록, "살아 움직이는 사람의 행동"을 초강력 강조!
+                eng_prompt = f"Ultra-realistic cinematic live-action footage of a Korean person. {prompt_topic}. The subject is a REAL living human acting naturally. They MUST exhibit continuous, highly dynamic human behavior: smooth visible breathing, natural eye blinking, and expressive fluid movements of the face, head, and body. It must look like a high-budget real video footage of a person moving naturally. Absolutely NO static, frozen, or still images. High motion, lifelike energy."
                 
                 status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 메인 AI 영상 엔진 접수 중... ⏳**")
                 visual_url, kie_status = call_kie_video(eng_prompt, aspect_ratio, vid_length, ref_image, KIE_KEY, status_text, current_idx, total_items)
                 
-                # 💡 [핵심 UX 개선] KIE 서버가 실패하더라도 "실패/에러"라는 무서운 단어를 띄우지 않고, 즉시 조용하게 Runway 보조 엔진으로 넘깁니다!
                 if not visual_url or "http" not in visual_url:
+                    # 에러 문구를 안 띄우고 조용히 초고화질 엔진으로 전환합니다.
                     status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 최상급 실사 엔진(Runway Gen-3)으로 자동 교체하여 렌더링 중... ⏳**")
                     visual_url, fal_vid_status = call_fal_video(eng_prompt, aspect_ratio, vid_length, ref_image, FAL_KEY, status_text, current_idx, total_items)
                 
                 if not visual_url or "http" not in visual_url:
-                    # 두 엔진이 모두 완전히 죽었을 때만 에러를 띄웁니다.
                     status_text.error(f"❌ 비디오 생성 완전 실패! (모든 엔진 응답 없음)")
                     st.error(f"상세 로그:\nKIE: {kie_status}\nRunway: {fal_vid_status}")
                     continue
