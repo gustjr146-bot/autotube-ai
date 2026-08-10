@@ -22,8 +22,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (무한 멈춤 100% 해결)")
-st.markdown("대본 정제, **서버 무응답(Hang) 원천차단**, 극사실적 인물 모션, 자막 병합까지 지원합니다.")
+st.title("🎬 AutoTube Studio AI (3중 엔진 무중단 마스터)")
+st.markdown("대본 정제, **Kling ➔ Runway ➔ Luma 3중 자동전환**, **5분 컷(Fast-Fail) 도입**, 극사실적 모션 강제, 자막 병합 지원.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -32,7 +32,7 @@ if not os.path.exists(FONT_PATH):
     except Exception: pass 
 
 # ==========================================
-# 2. API 연동 함수 정의
+# 2. 대본 생성
 # ==========================================
 def clean_script(text):
     text = re.sub(r'\(\d+:\d+\s*-\s*\d+:\d+\)', '', text)
@@ -58,240 +58,219 @@ def call_groq(prompt, api_key):
         res = requests.post(url, headers=headers, json=payload, timeout=20)
         if res.status_code == 200: 
             return clean_script(res.json()['choices'][0]['message']['content'])
-        else: return f"Groq 거부 ({res.status_code})"
+        return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-# 💡 [핵심 해결] 폴링(Polling) 과정에서 서버가 대답 안 하면 10초 만에 강제 종료하여 무한 멈춤 방지!
-def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_items):
-    if not api_key: return None, "API 키 없음"
+# ==========================================
+# 3. [엔진 1] KIE Kling (최대 5분 대기)
+# ==========================================
+def call_engine_1_kie(prompt, aspect_ratio, image_url, api_key, status_text, current_idx, total_items):
+    if not api_key: return None
     api_key = api_key.strip()
     create_url = "https://api.kie.ai/api/v1/jobs/createTask"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    ratio = "16:9" if aspect_ratio == "16:9" else "9:16"
     
-    dur_int = 5 if str(duration) not in ["5", "10"] else int(duration)
-    ratio_str = "16:9" if aspect_ratio == "16:9" else "9:16"
-    
-    # 군더더기 없는 KIE 100% 통과 순정 양식!
-    models_to_try = []
     if image_url:
-        models_to_try = [
-            {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "image_url": image_url, "duration": dur_int}},
-            {"model": "kling-3.0/video", "input": {"prompt": prompt, "image_url": image_url}},
-            {"model": "fal-ai/kling-video/v1/standard/image-to-video", "input": {"prompt": prompt, "image_url": image_url, "duration": str(dur_int)}}
-        ]
+        payloads = [{"model": "kuaishou/kling-video", "input": {"prompt": prompt, "image_url": image_url}}]
     else:
-        models_to_try = [
-            {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "aspect_ratio": ratio_str, "duration": dur_int}},
-            {"model": "kling-3.0/video", "input": {"prompt": prompt, "aspect_ratio": ratio_str}}
-        ]
+        payloads = [{"model": "kuaishou/kling-video", "input": {"prompt": prompt, "aspect_ratio": ratio}}]
         
     task_id = None
-    error_details = []
-    
-    for payload in models_to_try:
+    for p in payloads:
         try:
-            res = requests.post(create_url, headers=headers, json=payload, timeout=20)
-            if res.status_code == 200:
-                data = res.json().get('data')
-                if isinstance(data, dict) and data.get('taskId'):
-                    task_id = data.get('taskId')
-                    break 
-                else:
-                    detail = res.json().get('detail')
-                    if isinstance(detail, list):
-                        err_msg = ", ".join([f"[{d.get('loc', [''])[-1]}]: {d.get('msg')}" for d in detail])
-                    else:
-                        err_msg = res.json().get('msg') or str(res.json())
-                    error_details.append(f"[{payload['model']} 거부: {err_msg[:30]}]")
-            else:
-                error_details.append(f"[{payload['model']} 에러: {res.status_code}]")
-        except Exception:
-            error_details.append(f"[{payload['model']} 연결오류]")
-            
-    if not task_id: 
-        return None, f"KIE 양식 거부됨 ➔ {' | '.join(error_details)}"
+            r = requests.post(create_url, headers=headers, json=p, timeout=15)
+            if r.status_code == 200 and r.json().get('data', {}).get('taskId'):
+                task_id = r.json()['data']['taskId']
+                break
+        except: continue
         
-    try:
-        start_time = time.time()
-        for _ in range(360): # 30분 무한 대기 (넉넉하게)
-            time.sleep(5)
-            elapsed = int(time.time() - start_time)
-            
-            status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 KIE 메인 엔진 영상 생성 중... (현재 {elapsed}초 대기 중 / 최대 30분) ⏳**")
-            
-            # 💡 [버그 해결] timeout=10 을 걸어 무한 멈춤(Hang)을 원천 차단합니다!
-            try:
-                poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers, timeout=10)
-            except Exception:
-                continue # 서버가 무응답이면 에러 내지 않고 조용히 다음 턴으로 넘김
+    if not task_id: return None
+        
+    start = time.time()
+    for _ in range(60): # 💡 5분 컷! 5분 넘으면 가차없이 끊음
+        time.sleep(5)
+        elapsed = int(time.time() - start)
+        status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 [엔진1] Kling 렌더링 중... (현재 {elapsed}초 / 최대 5분 컷) ⏳**")
+        
+        try:
+            pr = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers, timeout=10)
+            if pr.status_code == 200:
+                d = pr.json().get('data', {})
+                if not isinstance(d, dict): continue
                 
-            if poll_res.status_code != 200: continue
-            
-            poll_data = poll_res.json().get('data', {})
-            if not isinstance(poll_data, dict): continue
-            
-            res_json = poll_data.get('resultJson', '{}')
-            if isinstance(res_json, str):
-                try: res_json = json.loads(res_json)
-                except: res_json = {}
-            if isinstance(res_json, dict) and res_json.get('resultUrls'):
-                urls = res_json.get('resultUrls')
-                if urls: return urls[0], "성공"
-            
-            state = str(poll_data.get('state', poll_data.get('status', ''))).lower()
-            if state in ['failed', 'error', 'fail', 'cancelled', 'timeout']: 
-                fail_msg = poll_data.get('failReason', '서버 내부 에러')
-                return None, f"KIE 렌더링 실패 ({fail_msg})"
-                
-        return None, "KIE 시간 초과 (30분 초과)"
-    except Exception as e: return None, f"KIE 시스템 에러: {str(e)}"
+                res_j = d.get('resultJson', {})
+                if isinstance(res_j, str): 
+                    try: res_j = json.loads(res_j)
+                    except: res_j = {}
+                if isinstance(res_j, dict) and res_j.get('resultUrls'):
+                    return res_j['resultUrls'][0]
+                    
+                stt = str(d.get('state', d.get('status', ''))).lower()
+                if stt in ['failed', 'error', 'cancelled', 'timeout']: return None
+        except: continue
+    return None # 5분 초과 시 즉시 None 반환
 
-# 💡 보조 엔진 (Fal.ai) 역시 무한 멈춤 방지를 완벽하게 적용했습니다.
-def call_fal_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_items):
-    if not api_key: return None, "API 키 없음"
-    api_key = api_key.strip()
-    dur_str = "5" if str(duration) not in ["5", "10"] else str(duration)
-    ratio_str = "16:9" if aspect_ratio == "16:9" else "9:16"
+# ==========================================
+# 4. [엔진 2] Fal Runway Gen-3 (최대 5분 대기)
+# ==========================================
+def call_engine_2_runway(prompt, aspect_ratio, image_url, api_key, status_text, current_idx, total_items):
+    if not api_key: return None
+    headers = {"Authorization": f"Key {api_key.strip()}", "Content-Type": "application/json"}
     
     if image_url:
-        url = "https://queue.fal.run/fal-ai/kling-video/v1/standard/image-to-video"
-        payload = {"image_url": image_url, "prompt": prompt, "duration": dur_str}
+        url = "https://queue.fal.run/fal-ai/runway-gen3/turbo/image-to-video"
+        payload = {"image_url": image_url, "prompt": prompt}
     else:
-        url = "https://queue.fal.run/fal-ai/kling-video/v1/standard/text-to-video"
-        payload = {"prompt": prompt, "aspect_ratio": ratio_str, "duration": dur_str}
+        url = "https://queue.fal.run/fal-ai/runway-gen3/turbo/text-to-video"
+        payload = {"prompt": prompt, "aspect_ratio": "16:9" if aspect_ratio == "16:9" else "9:16"}
         
-    headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
     try:
-        create_res = requests.post(url, headers=headers, json=payload, timeout=20)
-        if create_res.status_code != 200: 
-            return None, f"Fal 거부(코드{create_res.status_code})"
-        response_url = create_res.json().get('response_url')
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        if r.status_code != 200: return None
+        resp_url = r.json().get('response_url')
         
-        start_time = time.time()
-        for _ in range(360):
+        start = time.time()
+        for _ in range(60): # 💡 5분 컷!
             time.sleep(5)
-            elapsed = int(time.time() - start_time)
-            status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 보조 엔진(Fal.ai) 영상 생성 중... (현재 {elapsed}초 대기 중 / 최대 30분) ⏳**")
+            elapsed = int(time.time() - start)
+            status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 [엔진2] Runway Gen-3 자동전환 렌더링 중... (현재 {elapsed}초 / 최대 5분 컷) ⏳**")
             
-            # 💡 [버그 해결] 타임아웃 10초 설정으로 fal.ai 무한 멈춤 방지!
             try:
-                poll_res = requests.get(response_url, headers=headers, timeout=10)
-            except Exception:
-                continue # 서버 무응답 시 조용히 넘어감
-                
-            if poll_res.status_code == 200:
-                poll_json = poll_res.json()
-                status = poll_json.get('status', '').lower()
-                if status in ['failed', 'error', 'cancelled']: return None, f"Fal 렌더링 실패"
-                video_url = poll_json.get('video', {}).get('url')
-                if video_url: return video_url, "성공"
-        return None, "Fal 시간 초과 (30분 초과)"
-    except Exception as e: return None, f"Fal 에러"
+                pr = requests.get(resp_url, headers=headers, timeout=10)
+                if pr.status_code == 200:
+                    d = pr.json()
+                    stt = d.get('status', '').upper()
+                    if stt in ['FAILED', 'ERROR', 'CANCELLED']: return None
+                    
+                    v = d.get('video', {})
+                    if isinstance(v, dict) and v.get('url'): return v['url']
+                    if d.get('video_url'): return d['video_url']
+            except: continue
+        return None
+    except: return None
 
-def call_fal_tts(script, api_key):
-    if not api_key: return "fal 에러: API 키 없음"
-    api_key = api_key.strip()
-    url = "https://queue.fal.run/fal-ai/elevenlabs/tts/turbo-v2.5"
-    headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
-    clean_text = clean_script(script)
-    payload = {"text": clean_text[:500] if len(clean_text) > 500 else clean_text}
+# ==========================================
+# 5. [엔진 3] Fal Luma Dream Machine (최대 5분 대기)
+# ==========================================
+def call_engine_3_luma(prompt, aspect_ratio, image_url, api_key, status_text, current_idx, total_items):
+    if not api_key: return None
+    headers = {"Authorization": f"Key {api_key.strip()}", "Content-Type": "application/json"}
+    
+    url = "https://queue.fal.run/fal-ai/luma-dream-machine"
+    payload = {"prompt": prompt}
+    if image_url: payload["image_url"] = image_url
+    else: payload["aspect_ratio"] = "16:9" if aspect_ratio == "16:9" else "9:16"
+        
     try:
-        create_res = requests.post(url, headers=headers, json=payload, timeout=20)
-        if create_res.status_code != 200: return f"fal 거부"
-        response_url = create_res.json().get('response_url')
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        if r.status_code != 200: return None
+        resp_url = r.json().get('response_url')
+        
+        start = time.time()
+        for _ in range(60): # 💡 5분 컷!
+            time.sleep(5)
+            elapsed = int(time.time() - start)
+            status_text.markdown(f"**[{current_idx}/{total_items}] 🛸 [엔진3] Luma 최종 백업 렌더링 중... (현재 {elapsed}초 / 최대 5분 컷) ⏳**")
+            
+            try:
+                pr = requests.get(resp_url, headers=headers, timeout=10)
+                if pr.status_code == 200:
+                    d = pr.json()
+                    stt = d.get('status', '').upper()
+                    if stt in ['FAILED', 'ERROR', 'CANCELLED']: return None
+                    
+                    v = d.get('video', {})
+                    if isinstance(v, dict) and v.get('url'): return v['url']
+                    if d.get('video_url'): return d['video_url']
+            except: continue
+        return None
+    except: return None
+
+# ==========================================
+# 6. 음성 및 유틸리티
+# ==========================================
+def call_fal_tts(script, api_key):
+    if not api_key: return None
+    url = "https://queue.fal.run/fal-ai/elevenlabs/tts/turbo-v2.5"
+    headers = {"Authorization": f"Key {api_key.strip()}", "Content-Type": "application/json"}
+    payload = {"text": clean_script(script)[:500]}
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        if r.status_code != 200: return None
+        resp_url = r.json().get('response_url')
         for _ in range(20):
             time.sleep(3)
-            try: poll_res = requests.get(response_url, headers=headers, timeout=10)
+            try:
+                pr = requests.get(resp_url, headers=headers, timeout=10)
+                if pr.status_code == 200 and pr.json().get('audio', {}).get('url'):
+                    return pr.json()['audio']['url']
             except: continue
-            if poll_res.status_code == 200:
-                audio_url = poll_res.json().get('audio', {}).get('url')
-                if audio_url: return audio_url
-        return "fal 시간 초과"
-    except Exception: return f"fal 통신 에러"
+        return None
+    except: return None
 
 def download_file(url, save_path):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(url, headers=headers, stream=True, timeout=60)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, stream=True, timeout=30)
         response.raise_for_status() 
         with open(save_path, 'wb') as out_file:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk: out_file.write(chunk)
-        if os.path.getsize(save_path) < 1024:
-            raise Exception("다운로드된 파일이 손상되었습니다.")
-    except Exception as e:
-        raise Exception(f"안전 다운로드 실패: {e}")
+    except Exception as e: raise Exception(f"다운로드 실패: {e}")
 
 def create_dynamic_subtitles(text, video_width, video_height, duration):
     try:
-        clean_text = clean_script(text)
-        words = clean_text.split()
-        chunks = []
-        curr = ""
+        words = clean_script(text).split()
+        chunks, curr = [], ""
         for w in words:
-            if len(curr) + len(w) < 16:
-                curr += w + " "
+            if len(curr) + len(w) < 16: curr += w + " "
             else:
                 chunks.append(curr.strip())
                 curr = w + " "
         if curr: chunks.append(curr.strip())
             
-        clips = []
-        total_chars = sum(len(c) for c in chunks)
+        clips, total_chars, start_time = [], sum(len(c) for c in chunks), 0
         if total_chars == 0: return []
         
-        start_time = 0
         try: font = ImageFont.truetype(FONT_PATH, 38)
-        except Exception: font = ImageFont.load_default()
+        except: font = ImageFont.load_default()
         
         for chunk in chunks:
             chunk_duration = duration * (len(chunk) / total_chars)
             img = Image.new('RGBA', (video_width, 150), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
-            
             if hasattr(font, 'getbbox'):
                 bbox = font.getbbox(chunk)
                 w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
             else:
                 w, h = draw.textsize(chunk, font=font)
             
-            x_pos = (video_width - w) / 2
-            y_pos = 50
-            
+            x_pos, y_pos = (video_width - w) / 2, 50
             draw.rectangle((x_pos - 20, y_pos - 15, x_pos + w + 20, y_pos + h + 15), fill=(0, 0, 0, 180))
             draw.text((x_pos, y_pos), chunk, font=font, fill=(255, 255, 255, 255))
             
-            img_np = np.array(img)
-            txt_clip = ImageClip(img_np).set_duration(chunk_duration).set_start(start_time)
-            
-            subtitle_y = video_height * 0.60
-            txt_clip = txt_clip.set_position(('center', subtitle_y))
+            txt_clip = ImageClip(np.array(img)).set_duration(chunk_duration).set_start(start_time).set_position(('center', video_height * 0.60))
             clips.append(txt_clip)
-            
             start_time += chunk_duration
             
         return clips
-    except Exception as e:
-        print(f"자막 에러: {e}")
-        return []
+    except: return []
 
 # ==========================================
-# 3. 사이드바 
+# 7. 화면 및 메인 로직
 # ==========================================
 with st.sidebar:
     st.header("🔑 API 키 설정")
     GROQ_KEY = st.text_input("Groq API Key (대본용)", type="password")
-    KIE_KEY = st.text_input("KIE API Key (⭐1순위: 메인 비디오용)", type="password")
-    FAL_KEY = st.text_input("fal.ai API Key (⭐2순위: 비디오/음성용)", type="password")
+    KIE_KEY = st.text_input("KIE API Key (⭐엔진1)", type="password")
+    FAL_KEY = st.text_input("fal.ai API Key (⭐엔진2/3/음성)", type="password")
     RENDI_KEY = st.text_input("Rendi API Key (모션용)", type="password")
 
-# ==========================================
-# 4. 메인 대시보드 탭
-# ==========================================
-tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
+tab1, tab2, tab3, tab4 = st.tabs(["🚀 3중 엔진 생성", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성 (무한멈춤 해결 완료)")
+    st.subheader("대량 영상 자동 생성 (5분 컷 / 3중 엔진 방어)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -306,8 +285,8 @@ with tab1:
             progress_bar = st.progress(0)
             status_text = st.empty()
             results = []
-            
             total_items = len(df1)
+            
             for index, row in df1.iterrows():
                 current_idx = index + 1
                 topic = str(row.get('주제(필수)', row.get('주제', f'랜덤 주제 {current_idx}')))
@@ -315,30 +294,26 @@ with tab1:
                 prompt_topic = f"{topic}. {detail_req}" if detail_req and detail_req.lower() != 'nan' else topic
                 
                 ref_image = str(row.get('레퍼런스이미지 URL(선택)', row.get('레퍼런스이미지 URL', ''))).strip()
-                if ref_image.lower() in ['nan', '', 'none'] or not ref_image.startswith('http'):
-                    ref_image = None
+                if ref_image.lower() in ['nan', '', 'none'] or not ref_image.startswith('http'): ref_image = None
                     
-                vid_length = str(row.get('영상길이_초(필수)', '5')).strip()
-                if vid_length not in ['5', '10']: vid_length = '5'
-                
                 status_text.markdown(f"**[{current_idx}/{total_items}] '{topic}' 대본 작성 중...**")
-                raw_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠. 길이는 짧게 10초 분량만. 타임코드 금지.)", GROQ_KEY)
-                ai_script = clean_script(raw_script)
+                ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠. 길이는 짧게 10초 분량만. 타임코드 금지.)", GROQ_KEY)
                 
-                # 💡 [극사실주의 인간 모션 최우선 강제] "사람이 직접 행동하는 것처럼" 영상을 뽑기 위한 필수 마법의 프롬프트!
-                eng_prompt = f"Hyper-realistic cinematic live-action video of a Korean person. {prompt_topic}. The subject is a REAL living human acting extremely naturally. They MUST clearly exhibit dynamic fluid human behaviors: smooth visible breathing, natural eye blinking, and continuous lifelike movements of the face, head, and body. It must look like 4k real camera footage of a person in high motion. Absolutely NO static, frozen, or still images. Masterpiece, highly detailed."
+                # 💡 [극사실주의 인간 모션 프롬프트 500% 강화] 
+                eng_prompt = f"Extremely realistic live-action cinematic footage of a Korean person. {prompt_topic}. The person is a real human, continuously moving in a highly dynamic way. They are visibly breathing, blinking, and changing facial expressions and body posture naturally. Fluid, vivid motion. High energy. Absolutely NO static, still, or frozen photo effects. Masterpiece 4k video."
                 
-                status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 KIE API 영상 생성 접수 중... ⏳**")
-                visual_url, kie_status = call_kie_video(eng_prompt, aspect_ratio, vid_length, ref_image, KIE_KEY, status_text, current_idx, total_items)
+                # 💡 3중 엔진 캐스케이딩(Cascading) 로직 도입 (절대 멈추지 않음)
+                visual_url = None
+                visual_url = call_engine_1_kie(eng_prompt, aspect_ratio, ref_image, KIE_KEY, status_text, current_idx, total_items)
                 
-                if not visual_url or "http" not in visual_url:
-                    # KIE가 대답이 없거나 뻗으면 즉각적으로 보조 엔진(Fal)을 호출하여 끊김 없이 작업을 진행합니다.
-                    status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 보조 엔진으로 즉각 전환하여 영상 제작 요청 중... ⏳**")
-                    visual_url, fal_vid_status = call_fal_video(eng_prompt, aspect_ratio, vid_length, ref_image, FAL_KEY, status_text, current_idx, total_items)
+                if not visual_url: # KIE 실패/타임아웃 시
+                    visual_url = call_engine_2_runway(eng_prompt, aspect_ratio, ref_image, FAL_KEY, status_text, current_idx, total_items)
+                    
+                if not visual_url: # Runway 실패/타임아웃 시
+                    visual_url = call_engine_3_luma(eng_prompt, aspect_ratio, ref_image, FAL_KEY, status_text, current_idx, total_items)
                 
-                if not visual_url or "http" not in visual_url:
-                    status_text.error(f"❌ 비디오 생성 완전 실패! (서버 일시적 과부하)")
-                    st.error(f"상세 로그:\nKIE: {kie_status}\nFal: {fal_vid_status}")
+                if not visual_url: # 3개 다 죽었을 때
+                    st.error(f"❌ '{topic}' 비디오 생성 완전 실패 (모든 AI 엔진 과부하). 다음으로 넘어갑니다.")
                     continue
                 
                 status_text.markdown(f"**[{current_idx}/{total_items}] '{topic}' 음성 생성 중...**")
@@ -357,32 +332,26 @@ with tab3: st.info("렌더링 시작...")
 with tab4:
     st.subheader("📑 최종 영상(MP4) 자동 병합")
     file4 = st.file_uploader("완료된 엑셀(CSV) 업로드", type=['csv'], key="f4")
-    
     if file4:
         df4 = pd.read_csv(file4)
-        
         if st.button("🎬 자막 포함 동영상 렌더링 시작", type="primary"):
             progress_bar = st.progress(0)
             status_text = st.empty()
-            
             if not os.path.exists("output_videos"): os.makedirs("output_videos")
                 
             for index, row in df4.iterrows():
                 topic = str(row.get('주제', f'video_{index}'))
                 script_text = clean_script(str(row.get('대본', '')))
-                vis_url = str(row.get('비디오', row.get('이미지', '')))
+                vis_url = str(row.get('비디오', ''))
                 audio_url = str(row.get('음성', ''))
                 
-                status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 안전 다운로드 및 렌더링 중... ⏳**")
-                
-                if "http" not in vis_url or vis_url.lower() == 'nan': continue
-                if "http" not in audio_url or audio_url.lower() == 'nan': continue
+                if "http" not in vis_url or "http" not in audio_url: continue
+                status_text.markdown(f"**[{index+1}/{len(df4)}] '{topic}' 병합 중... ⏳**")
                     
                 try:
-                    parsed_url = urlparse(vis_url)
-                    ext = os.path.splitext(parsed_url.path)[1].lower()
-                    if ext in ['.mp4', '.mov', '.webm', '.avi']: is_video = True
-                    else: is_video = False; ext = '.jpg'
+                    ext = os.path.splitext(urlparse(vis_url).path)[1].lower()
+                    is_video = ext in ['.mp4', '.mov', '.webm', '.avi']
+                    ext = ext if is_video else '.jpg'
                         
                     temp_vis_path = f"temp_vis_{index}{ext}"
                     audio_path = f"temp_audio_{index}.mp3"
@@ -404,7 +373,7 @@ with tab4:
                                 ping_pong_clip = concatenate_videoclips([video_clip, reversed_clip])
                                 num_loops = math.ceil(audio_clip.duration / ping_pong_clip.duration)
                                 video_clip = concatenate_videoclips([ping_pong_clip] * num_loops)
-                            except Exception:
+                            except:
                                 num_loops = math.ceil(audio_clip.duration / video_clip.duration)
                                 video_clip = concatenate_videoclips([video_clip] * num_loops)
                                 
@@ -414,31 +383,19 @@ with tab4:
                         w, h = base_clip.size
                         w, h = w - w % 2, h - h % 2
                         base_clip = base_clip.resize(newsize=(w, h))
-                        
-                        def zoom(t): return 1.0 + 0.05 * (t / audio_clip.duration)
-                        zoomed_clip = base_clip.resize(zoom).set_position(('center', 'center'))
+                        zoomed_clip = base_clip.resize(lambda t: 1.0 + 0.05 * (t / audio_clip.duration)).set_position(('center', 'center'))
                         video_clip = CompositeVideoClip([zoomed_clip], size=(w, h)).set_duration(audio_clip.duration)
                         
                     video_clip = video_clip.set_audio(audio_clip)
-                    
                     subtitle_clips = create_dynamic_subtitles(script_text, video_clip.w, video_clip.h, video_clip.duration)
                     
-                    if subtitle_clips:
-                        final_clip = CompositeVideoClip([video_clip] + subtitle_clips)
-                    else:
-                        final_clip = video_clip
-                    
+                    final_clip = CompositeVideoClip([video_clip] + subtitle_clips) if subtitle_clips else video_clip
                     final_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
                     
-                    st.success(f"🎉 '{topic}' 완벽한 동영상 완성!")
+                    st.success(f"🎉 '{topic}' 완성!")
                     st.video(output_path)
-                    
                     with open(output_path, "rb") as v_file:
                         st.download_button(f"💾 '{topic}' 다운로드", data=v_file, file_name=f"{topic}.mp4", mime="video/mp4", key=f"dl_{index}")
-                        
-                except Exception as e:
-                    st.error(f"합성 에러 발생: {e}")
-                
+                except Exception as e: st.error(f"합성 에러: {e}")
                 progress_bar.progress((index + 1) / len(df4))
-                
-            status_text.success("✅ 모든 비디오 병합이 완료되었습니다!")
+            status_text.success("✅ 모든 비디오 병합 완료!")
