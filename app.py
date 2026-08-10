@@ -22,8 +22,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (무중단 30분 대기 마스터)")
-st.markdown("대본 정제, **KIE 만능 양식 투척**, **최대 30분 무한대기**, 극사실적 인물 모션, 자막 병합까지 지원합니다.")
+st.title("🎬 AutoTube Studio AI (무소음 무중단 마스터)")
+st.markdown("대본 정제, **에러창 없는 완벽 자동전환**, **30분 무한대기**, 극사실적 인물 모션, 자막 병합까지 지원합니다.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -61,7 +61,7 @@ def call_groq(prompt, api_key):
         else: return f"Groq 거부 ({res.status_code})"
     except Exception: return "Groq 통신 에러"
 
-# 💡 [핵심] KIE가 "This field is required"를 뱉지 못하도록 가능한 모든 조합(image, image_url, duration 유무)을 다 던집니다!
+# 💡 KIE 메인 엔진 
 def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
@@ -73,20 +73,15 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
     
     models_to_try = []
     if image_url:
-        # 사진(I2V) 변수명 조합 (image_url, image)
         models_to_try = [
             {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "image_url": image_url, "duration": dur_int}},
-            {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "image": image_url, "duration": dur_int}},
             {"model": "kling-3.0/video", "input": {"prompt": prompt, "image_url": image_url}},
-            {"model": "kling-3.0/video", "input": {"prompt": prompt, "image": image_url}},
             {"model": "fal-ai/kling-video/v1/standard/image-to-video", "input": {"prompt": prompt, "image_url": image_url, "duration": str(dur_int)}}
         ]
     else:
-        # 텍스트(T2V) 조합
         models_to_try = [
             {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "aspect_ratio": ratio_str, "duration": dur_int}},
-            {"model": "kling-3.0/video", "input": {"prompt": prompt, "aspect_ratio": ratio_str}},
-            {"model": "fal-ai/kling-video/v1/standard/text-to-video", "input": {"prompt": prompt, "aspect_ratio": ratio_str, "duration": str(dur_int)}}
+            {"model": "kling-3.0/video", "input": {"prompt": prompt, "aspect_ratio": ratio_str}}
         ]
         
     task_id = None
@@ -99,9 +94,8 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
                 data = res.json().get('data')
                 if isinstance(data, dict) and data.get('taskId'):
                     task_id = data.get('taskId')
-                    break # 성공 시 루프 탈출!
+                    break 
                 else:
-                    # 에러 상세 내용을 파싱하여 수집
                     detail = res.json().get('detail')
                     if isinstance(detail, list):
                         err_msg = ", ".join([f"[{d.get('loc', [''])[-1]}]: {d.get('msg')}" for d in detail])
@@ -122,7 +116,7 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
             time.sleep(5)
             elapsed = int(time.time() - start_time)
             
-            status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 KIE 서버 렌더링 진행 중... (현재 {elapsed}초 대기 중 / 최대 30분) ⏳**")
+            status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 메인 AI 엔진 렌더링 진행 중... (현재 {elapsed}초 대기 중 / 최대 30분) ⏳**")
             
             poll_res = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers, timeout=15)
             if poll_res.status_code != 200: continue
@@ -130,7 +124,6 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
             poll_data = poll_res.json().get('data', {})
             if not isinstance(poll_data, dict): continue
             
-            # 영상 URL이 나왔는지 즉시 확인
             res_json = poll_data.get('resultJson', '{}')
             if isinstance(res_json, str):
                 try: res_json = json.loads(res_json)
@@ -139,7 +132,6 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
                 urls = res_json.get('resultUrls')
                 if urls: return urls[0], "성공"
             
-            # 실패 여부 확인
             state = str(poll_data.get('state', poll_data.get('status', ''))).lower()
             if state in ['failed', 'error', 'fail', 'cancelled', 'timeout']: 
                 fail_msg = poll_data.get('failReason', '서버 내부 에러')
@@ -148,7 +140,7 @@ def call_kie_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
         return None, "KIE 시간 초과 (30분 초과)"
     except Exception as e: return None, f"KIE 폴링 에러: {str(e)}"
 
-# 💡 fal.ai의 대기 시간 역시 최대 30분(360회)으로 늘려 도중에 절대 끊기지 않게 합니다.
+# 💡 Fal 보조 엔진
 def call_fal_video(prompt, aspect_ratio, duration, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "API 키 없음"
     api_key = api_key.strip()
@@ -173,7 +165,7 @@ def call_fal_video(prompt, aspect_ratio, duration, image_url, api_key, status_te
         for _ in range(360): # 💡 Fal.ai 역시 최대 30분 무한 인내심 대기!
             time.sleep(5)
             elapsed = int(time.time() - start_time)
-            status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 Fal 보조 엔진 렌더링 진행 중... (현재 {elapsed}초 대기 중 / 최대 30분) ⏳**")
+            status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 초고화질 보조 엔진 렌더링 진행 중... (현재 {elapsed}초 대기 중 / 최대 30분) ⏳**")
             
             poll_res = requests.get(response_url, headers=headers, timeout=15)
             if poll_res.status_code == 200:
@@ -288,7 +280,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 자동화 파이프라인", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성 (30분 무한대기 마스터)")
+    st.subheader("대량 영상 재료 자동 생성 (조용한 무중단 렌더링)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -322,19 +314,19 @@ with tab1:
                 raw_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠. 길이는 짧게 10초 분량만. 타임코드 금지.)", GROQ_KEY)
                 ai_script = clean_script(raw_script)
                 
-                # 💡 [극사실주의 인간 모션 강제] 멈춘 사진이 아님을 AI에게 극단적으로 강조하여 "사람이 직접 행동하는 듯한" 모션을 강제합니다!
-                eng_prompt = f"A highly realistic live-action video of a Korean person. {prompt_topic}. The person is captured in vivid motion, breathing naturally, blinking, and making fluid, lifelike gestures. The movement is continuous and extremely natural, exactly like real video footage. Absolutely no static or frozen images."
+                # 💡 [극사실주의 인간 모션 최우선 적용] AI가 절대 사진을 멈춰두지 못하게 극한의 인간 움직임을 강제로 명령합니다!
+                eng_prompt = f"Highly realistic, live-action cinematic video of a Korean person. {prompt_topic}. The subject MUST be moving continuously. They are visibly breathing smoothly, blinking naturally, and moving their head, face, and body with fluid, lifelike energy. It is absolutely NOT a static image. High motion, dynamic human behavior, masterpiece."
                 
-                status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 KIE API 양식 탐색 및 영상 접수 중... ⏳**")
+                status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 메인 AI 영상 엔진 접수 중... ⏳**")
                 visual_url, kie_status = call_kie_video(eng_prompt, aspect_ratio, vid_length, ref_image, KIE_KEY, status_text, current_idx, total_items)
                 
                 if not visual_url or "http" not in visual_url:
-                    # KIE가 최종 거부하면 조용하고 매끄럽게 Fal 보조 엔진으로 넘깁니다.
-                    st.warning(f"⚠️ KIE 거부됨:\n{kie_status}")
-                    status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 Fal 보조 엔진으로 전환하여 렌더링 중... ⏳**")
+                    # 💡 [핵심 버그 수정] KIE 거부 노란색 경고창(st.warning)을 완전히 지웠습니다! 조용하게 넘어갑니다.
+                    status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 최상급 보조 엔진으로 자동 전환하여 렌더링 진행 중... ⏳**")
                     visual_url, fal_vid_status = call_fal_video(eng_prompt, aspect_ratio, vid_length, ref_image, FAL_KEY, status_text, current_idx, total_items)
                 
                 if not visual_url or "http" not in visual_url:
+                    # 메인 엔진, 보조 엔진 둘 다 죽었을 때만 진짜 에러를 보여줍니다.
                     status_text.error(f"❌ 비디오 생성 완전 실패! (모든 엔진 응답 없음)")
                     st.error(f"상세 로그:\nKIE: {kie_status}\nFal: {fal_vid_status}")
                     continue
