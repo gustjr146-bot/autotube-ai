@@ -23,7 +23,7 @@ import moviepy.video.fx.all as vfx
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
 st.title("🎬 AutoTube Studio AI (오류 완벽방어 & 극사실 모션)")
-st.markdown("대본 정제, **서버 무응답 방어막 적용**, 사람이 직접 행동하는 극사실적 모션 강제, 자막 병합 지원.")
+st.markdown("대본 정제, **서버 접속지연 타임아웃 해결**, 사람이 직접 행동하는 극사실적 모션 강제, 자막 병합 지원.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -55,7 +55,7 @@ def call_groq(prompt, api_key):
     except: pass
     return "대본 생성 에러"
 
-# 💡 [버그 해결] KIE 서버 응답이 비정상일 때 NoneType 에러가 나지 않도록 방어막 추가
+# 💡 [핵심 개선] KIE 서버 접수 대기 시간을 45초로 연장하여 접속 튕김 현상 원천 차단!
 def call_kie_video(prompt, aspect_ratio, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "KIE API 키 누락"
     headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
@@ -67,7 +67,8 @@ def call_kie_video(prompt, aspect_ratio, image_url, api_key, status_text, curren
         payload = {"model": "kling-3.0/video", "input": {"prompt": prompt, "aspect_ratio": ratio, "duration": 5}}
         
     try:
-        r = requests.post("https://api.kie.ai/api/v1/jobs/createTask", headers=headers, json=payload, timeout=15)
+        # 접속 타임아웃을 15초 -> 45초로 대폭 늘려 서버 과부하를 견뎌냅니다.
+        r = requests.post("https://api.kie.ai/api/v1/jobs/createTask", headers=headers, json=payload, timeout=45)
         if r.status_code == 200:
             res_json = r.json()
             if isinstance(res_json, dict) and res_json.get('data', {}).get('taskId'):
@@ -78,7 +79,7 @@ def call_kie_video(prompt, aspect_ratio, image_url, api_key, status_text, curren
         else:
             return None, f"KIE 통신 에러 (코드 {r.status_code})"
     except Exception as e: 
-        return None, "KIE 시스템 무응답"
+        return None, "KIE 시스템 무응답(접속 폭주)"
         
     start = time.time()
     for _ in range(120): # 최대 10분 대기
@@ -106,7 +107,7 @@ def call_kie_video(prompt, aspect_ratio, image_url, api_key, status_text, curren
         except: continue
     return None, "KIE 시간 초과"
 
-# 💡 [버그 해결] Fal 보조 엔진 역시 빈 껍데기 응답을 걸러냅니다.
+# 💡 [핵심 개선] Fal 엔진 역시 접속 대기 시간을 45초로 연장!
 def call_fal_fast_video(prompt, aspect_ratio, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "Fal API 키 누락"
     headers = {"Authorization": f"Key {api_key.strip()}", "Content-Type": "application/json"}
@@ -119,9 +120,10 @@ def call_fal_fast_video(prompt, aspect_ratio, image_url, api_key, status_text, c
         payload = {"prompt": prompt, "aspect_ratio": "16:9" if aspect_ratio == "16:9" else "9:16"}
         
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        # 접속 타임아웃 45초 적용
+        r = requests.post(url, headers=headers, json=payload, timeout=45)
         if r.status_code != 200: 
-            return None, f"Fal 접속 거부 (키 오류 의심): {r.text[:80]}"
+            return None, f"Fal 접속 거부: {r.text[:80]}"
         
         res_json = r.json()
         if not isinstance(res_json, dict): return None, "Fal 응답 포맷 오류"
@@ -153,7 +155,7 @@ def call_fal_tts(script, api_key):
     headers = {"Authorization": f"Key {api_key.strip()}", "Content-Type": "application/json"}
     payload = {"text": clean_script(script)[:500]}
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        r = requests.post(url, headers=headers, json=payload, timeout=20)
         if r.status_code != 200: return None
         res_json = r.json()
         if not isinstance(res_json, dict): return None
@@ -261,13 +263,15 @@ with tab1:
                 status_text.markdown(f"**[{current_idx}/{total_items}] '{topic}' 대본 작성 중...**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠)", GROQ_KEY)
                 
-                # 💡 [극사실 모션 보장 프롬프트] 사람이 직접 행동하는 듯한 완벽한 묘사 강제!
-                eng_prompt = f"Ultra-realistic cinematic live-action video of a Korean person. {prompt_topic}. The subject is a REAL living human actively moving. They MUST exhibit continuous, natural human behaviors: smooth visible breathing, natural eye blinking, shifting their body weight, and expressive fluid movements. It must look like real camera video footage capturing authentic human actions. Absolutely NO static, frozen, or still images. High motion, lifelike energy."
+                # 💡 [실사 행동 강제 프롬프트] AI가 절대 정지된 프레임을 쓰지 못하도록 완벽하게 다듬었습니다.
+                eng_prompt = f"Live-action video recording of a Korean person. {prompt_topic}. The person is a real human being performing highly dynamic and continuous natural movements. They are clearly breathing, blinking their eyes, and moving their head and body realistically. Zero static frames. Lifelike motion and cinematic energy."
                 
+                # 시각적으로 접속 중임을 안내
+                status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 KIE 영상 엔진 서버에 접속 중입니다... (최대 45초 소요) ⏳**")
                 visual_url, kie_err = call_kie_video(eng_prompt, aspect_ratio, ref_image, KIE_KEY, status_text, current_idx, total_items)
                 
                 if not visual_url: 
-                    status_text.markdown(f"**[{current_idx}/{total_items}] ⚠️ KIE 실패({kie_err}), 초고속 보조 엔진 가동 중... ⏳**")
+                    status_text.markdown(f"**[{current_idx}/{total_items}] ⚠️ KIE 혼잡({kie_err}), 초고속 보조 엔진 접속 중... (최대 45초 소요) ⏳**")
                     visual_url, fal_err = call_fal_fast_video(eng_prompt, aspect_ratio, ref_image, FAL_KEY, status_text, current_idx, total_items)
                 
                 if not visual_url:
