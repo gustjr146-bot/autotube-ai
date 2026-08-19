@@ -22,8 +22,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (FAIL 버그 완벽 해결)")
-st.markdown("대본 정제, **KIE FAIL 시 즉각 전환**, 사람이 직접 행동하는 극사실적 모션 강제, 자막 병합 지원.")
+st.title("🎬 AutoTube Studio AI (무한 대기 인내 & 극사실 모션)")
+st.markdown("대본 정제, **서버 폭주/대기열 완벽 인내(최대 20분)**, 사람이 직접 행동하는 극사실적 모션 강제, 자막 병합 지원.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -66,7 +66,8 @@ def call_kie_main_video(prompt, aspect_ratio, image_url, api_key, status_text, c
         payload = {"model": "kuaishou/kling-video", "input": {"prompt": prompt, "aspect_ratio": ratio}}
         
     try:
-        r = requests.post("https://api.kie.ai/api/v1/jobs/createTask", headers=headers, json=payload, timeout=30)
+        # 💡 KIE 서버가 너무 바빠서 튕기지 않도록 요청 자체의 대기 시간을 60초로 늘렸습니다.
+        r = requests.post("https://api.kie.ai/api/v1/jobs/createTask", headers=headers, json=payload, timeout=60)
         if r.status_code == 200:
             res_json = r.json()
             if isinstance(res_json, dict) and res_json.get('data', {}).get('taskId'):
@@ -79,12 +80,12 @@ def call_kie_main_video(prompt, aspect_ratio, image_url, api_key, status_text, c
         return None, "KIE 시스템 무응답(접속 폭주)"
         
     start = time.time()
-    for _ in range(120): # 최대 10분 대기
+    for _ in range(180): # KIE 최대 15분 대기
         time.sleep(5)
         elapsed = int(time.time() - start)
         
         try:
-            pr = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers, timeout=10)
+            pr = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers, timeout=15)
             if pr.status_code == 200:
                 d = pr.json().get('data', {})
                 if not isinstance(d, dict): continue
@@ -99,7 +100,6 @@ def call_kie_main_video(prompt, aspect_ratio, image_url, api_key, status_text, c
                 if isinstance(res_j, dict) and res_j.get('resultUrls'):
                     return res_j['resultUrls'][0], "성공"
                     
-                # 💡 [핵심 버그 수정] 'FAIL' 상태를 정확히 인식하여 무한 멈춤 없이 즉각 다음으로 넘깁니다!
                 if stt in ['FAIL', 'FAILED', 'ERROR', 'CANCELLED', 'TIMEOUT']: 
                     return None, f"KIE 렌더링 실패: {d.get('failReason', '서버 내부 오류')}"
         except: continue
@@ -117,7 +117,7 @@ def call_fal_backup_video(prompt, aspect_ratio, image_url, api_key, status_text,
         payload = {"prompt": prompt, "aspect_ratio": "16:9" if aspect_ratio == "16:9" else "9:16"}
         
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=20)
+        r = requests.post(url, headers=headers, json=payload, timeout=60)
         if r.status_code == 401:
             return None, "Fal 접속 거부(401): API 키 확인 필요"
         elif r.status_code != 200: 
@@ -128,24 +128,24 @@ def call_fal_backup_video(prompt, aspect_ratio, image_url, api_key, status_text,
         resp_url = res_json.get('response_url')
         
         start = time.time()
-        for _ in range(60): # 5분 대기
+        # 💡 [핵심 버그 수정] Fal 서버 대기열이 길어지는 것을 감안하여 대기 시간을 최대 20분(240번)으로 대폭 늘렸습니다!
+        for _ in range(240): 
             time.sleep(5)
             elapsed = int(time.time() - start)
             try:
-                pr = requests.get(resp_url, headers=headers, timeout=10)
+                pr = requests.get(resp_url, headers=headers, timeout=15)
                 if pr.status_code == 200:
                     d = pr.json()
                     if not isinstance(d, dict): continue
                     stt = d.get('status', 'PENDING').upper()
                     status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 [2순위] Fal 보조 엔진 렌더링 중... (상태: {stt} / {elapsed}초 경과) ⏳**")
                     
-                    # 💡 여기서도 FAIL을 명확히 인식합니다.
                     if stt in ['FAIL', 'FAILED', 'ERROR', 'CANCELLED']: return None, "Fal 렌더링 실패"
                     v = d.get('video', {})
                     if isinstance(v, dict) and v.get('url'): return v['url'], "성공"
                     if d.get('video_url'): return d['video_url'], "성공"
             except: continue
-        return None, "Fal 시간 초과"
+        return None, "Fal 시간 초과 (대기열 지연)"
     except Exception: return None, "Fal 시스템 무응답"
 
 def call_fal_tts(script, api_key):
@@ -154,7 +154,7 @@ def call_fal_tts(script, api_key):
     headers = {"Authorization": f"Key {api_key.strip()}", "Content-Type": "application/json"}
     payload = {"text": clean_script(script)[:500]}
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=20)
+        r = requests.post(url, headers=headers, json=payload, timeout=30)
         if r.status_code != 200: return None
         res_json = r.json()
         if not isinstance(res_json, dict): return None
@@ -177,7 +177,7 @@ def call_fal_tts(script, api_key):
 # ==========================================
 def download_file(url, save_path):
     headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(url, headers=headers, stream=True, timeout=30)
+    response = requests.get(url, headers=headers, stream=True, timeout=60)
     response.raise_for_status() 
     with open(save_path, 'wb') as out_file:
         for chunk in response.iter_content(chunk_size=8192):
@@ -228,13 +228,12 @@ with st.sidebar:
     GROQ_KEY = st.text_input("Groq API Key (대본용)", type="password")
     KIE_KEY = st.text_input("KIE API Key (⭐엔진1)", type="password")
     FAL_KEY = st.text_input("fal.ai API Key (⭐엔진2/음성)", type="password")
-    # 💡 누락되었던 Rendi API Key를 정확하게 다시 추가했습니다.
     RENDI_KEY = st.text_input("Rendi API Key (모션용)", type="password") 
 
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 영상 생성", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성 (FAIL 버그 해결)")
+    st.subheader("대량 영상 재료 자동 생성 (무한 대기 인내 모드)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -263,15 +262,15 @@ with tab1:
                 status_text.markdown(f"**[{current_idx}/{total_items}] '{topic}' 대본 작성 중...**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠)", GROQ_KEY)
                 
-                # 💡 [극사실 인물 모션 초강력 프롬프트] AI가 사진을 멈춰두지 못하도록 확실하게 묘사했습니다.
-                eng_prompt = f"Ultra-realistic cinematic live-action video. {prompt_topic}. The main subject is a slim Korean woman in her early 30s holding a book, who is a REAL living human actively moving. She MUST exhibit continuous, natural human behaviors: smooth visible breathing, natural eye blinking, and realistic fluid body movements. This must look exactly like high-quality camera footage of a moving person. Absolutely NO static or frozen pictures."
+                # 💡 [극사실 인물 모션 강력 통제] 사진이 아닌 사람이 직접 행동하는 모션을 극한으로 강제합니다.
+                eng_prompt = f"Ultra-realistic cinematic live-action video. {prompt_topic}. The main subject is a REAL living human actively moving and acting. They MUST exhibit continuous, natural human behaviors: smooth visible breathing, natural eye blinking, and realistic fluid body movements. This must look exactly like high-quality camera footage of a moving person. Absolutely NO static, frozen, or still pictures."
                 
                 status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 1순위 KIE 엔진 접속 중... ⏳**")
                 
                 visual_url, kie_err = call_kie_main_video(eng_prompt, aspect_ratio, ref_image, KIE_KEY, status_text, current_idx, total_items)
                 
                 if not visual_url: 
-                    # KIE가 FAIL을 뱉으면, 여기서 멈추지 않고 즉각 Fal로 부드럽게 넘어갑니다!
+                    # KIE가 튕기면, Fal.ai 엔진에서 20분 동안 넉넉히 인내하며 기다립니다!
                     status_text.markdown(f"**[{current_idx}/{total_items}] ⚠️ KIE 실패({kie_err}), 2순위 보조 엔진(Fal) 가동 중... ⏳**")
                     visual_url, fal_err = call_fal_backup_video(eng_prompt, aspect_ratio, ref_image, FAL_KEY, status_text, current_idx, total_items)
                 
