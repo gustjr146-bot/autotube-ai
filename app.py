@@ -22,8 +22,8 @@ import moviepy.video.fx.all as vfx
 # 1. 화면 및 기본 설정
 # ==========================================
 st.set_page_config(page_title="AutoTube Studio AI", page_icon="🎬", layout="wide")
-st.title("🎬 AutoTube Studio AI (오류 해결 & 극사실 모션)")
-st.markdown("대본 정제, **에러 원인 정확히 표시**, 사람이 직접 행동하는 극사실적 모션 강제, 자막 병합 지원.")
+st.title("🎬 AutoTube Studio AI (오류 완벽방어 & 극사실 모션)")
+st.markdown("대본 정제, **서버 무응답 방어막 적용**, 사람이 직접 행동하는 극사실적 모션 강제, 자막 병합 지원.")
 
 FONT_PATH = os.path.abspath("NanumGothic.ttf")
 if not os.path.exists(FONT_PATH):
@@ -55,13 +55,12 @@ def call_groq(prompt, api_key):
     except: pass
     return "대본 생성 에러"
 
-# 💡 KIE 엔진 (순정 양식으로 거부 확률 최소화)
+# 💡 [버그 해결] KIE 서버 응답이 비정상일 때 NoneType 에러가 나지 않도록 방어막 추가
 def call_kie_video(prompt, aspect_ratio, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "KIE API 키 누락"
     headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
     ratio = "16:9" if aspect_ratio == "16:9" else "9:16"
     
-    # KIE 필수 규격 엄수 (duration 추가)
     if image_url:
         payload = {"model": "kling-3.0/video", "input": {"prompt": prompt, "image_url": image_url, "duration": 5}}
     else:
@@ -69,13 +68,17 @@ def call_kie_video(prompt, aspect_ratio, image_url, api_key, status_text, curren
         
     try:
         r = requests.post("https://api.kie.ai/api/v1/jobs/createTask", headers=headers, json=payload, timeout=15)
-        if r.status_code == 200 and r.json().get('data', {}).get('taskId'):
-            task_id = r.json()['data']['taskId']
+        if r.status_code == 200:
+            res_json = r.json()
+            if isinstance(res_json, dict) and res_json.get('data', {}).get('taskId'):
+                task_id = res_json['data']['taskId']
+            else:
+                err = res_json.get('msg', '알 수 없는 응답') if isinstance(res_json, dict) else "서버 응답 오류"
+                return None, f"KIE 서버 접수 거부: {str(err)[:80]}"
         else:
-            err = r.json().get('msg') if 'json' in r.headers.get('Content-Type', '') else r.text
-            return None, f"KIE 서버 접수 거부: {err[:80]}"
+            return None, f"KIE 통신 에러 (코드 {r.status_code})"
     except Exception as e: 
-        return None, f"KIE 통신 오류: {str(e)}"
+        return None, "KIE 시스템 무응답"
         
     start = time.time()
     for _ in range(120): # 최대 10분 대기
@@ -85,7 +88,9 @@ def call_kie_video(prompt, aspect_ratio, image_url, api_key, status_text, curren
         try:
             pr = requests.get(f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}", headers=headers, timeout=10)
             if pr.status_code == 200:
-                d = pr.json().get('data', {})
+                d = pr.json()
+                if not isinstance(d, dict): continue
+                d = d.get('data', {})
                 stt = str(d.get('state', d.get('status', 'PENDING'))).upper()
                 status_text.markdown(f"**[{current_idx}/{total_items}] 🎥 [1순위] KIE 렌더링 중... (상태: {stt} / {elapsed}초 경과) ⏳**")
                 
@@ -101,7 +106,7 @@ def call_kie_video(prompt, aspect_ratio, image_url, api_key, status_text, curren
         except: continue
     return None, "KIE 시간 초과"
 
-# 💡 Fal 보조 엔진
+# 💡 [버그 해결] Fal 보조 엔진 역시 빈 껍데기 응답을 걸러냅니다.
 def call_fal_fast_video(prompt, aspect_ratio, image_url, api_key, status_text, current_idx, total_items):
     if not api_key: return None, "Fal API 키 누락"
     headers = {"Authorization": f"Key {api_key.strip()}", "Content-Type": "application/json"}
@@ -117,7 +122,10 @@ def call_fal_fast_video(prompt, aspect_ratio, image_url, api_key, status_text, c
         r = requests.post(url, headers=headers, json=payload, timeout=15)
         if r.status_code != 200: 
             return None, f"Fal 접속 거부 (키 오류 의심): {r.text[:80]}"
-        resp_url = r.json().get('response_url')
+        
+        res_json = r.json()
+        if not isinstance(res_json, dict): return None, "Fal 응답 포맷 오류"
+        resp_url = res_json.get('response_url')
         
         start = time.time()
         for _ in range(60): # 5분 대기
@@ -127,6 +135,7 @@ def call_fal_fast_video(prompt, aspect_ratio, image_url, api_key, status_text, c
                 pr = requests.get(resp_url, headers=headers, timeout=10)
                 if pr.status_code == 200:
                     d = pr.json()
+                    if not isinstance(d, dict): continue
                     stt = d.get('status', 'PENDING').upper()
                     status_text.markdown(f"**[{current_idx}/{total_items}] 🚀 [2순위] Fal 보조 엔진 렌더링 중... (상태: {stt} / {elapsed}초 경과) ⏳**")
                     
@@ -136,7 +145,7 @@ def call_fal_fast_video(prompt, aspect_ratio, image_url, api_key, status_text, c
                     if d.get('video_url'): return d['video_url'], "성공"
             except: continue
         return None, "Fal 시간 초과"
-    except Exception as e: return None, f"Fal 통신 오류: {str(e)}"
+    except Exception as e: return None, "Fal 시스템 무응답"
 
 def call_fal_tts(script, api_key):
     if not api_key: return None
@@ -146,13 +155,18 @@ def call_fal_tts(script, api_key):
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=15)
         if r.status_code != 200: return None
-        resp_url = r.json().get('response_url')
+        res_json = r.json()
+        if not isinstance(res_json, dict): return None
+        resp_url = res_json.get('response_url')
+        
         for _ in range(20):
             time.sleep(3)
             try:
                 pr = requests.get(resp_url, headers=headers, timeout=10)
-                if pr.status_code == 200 and pr.json().get('audio', {}).get('url'):
-                    return pr.json()['audio']['url']
+                if pr.status_code == 200:
+                    pd_json = pr.json()
+                    if isinstance(pd_json, dict) and pd_json.get('audio', {}).get('url'):
+                        return pd_json['audio']['url']
             except: continue
     except: pass
     return None
@@ -213,13 +227,12 @@ with st.sidebar:
     GROQ_KEY = st.text_input("Groq API Key (대본용)", type="password")
     KIE_KEY = st.text_input("KIE API Key (⭐엔진1)", type="password")
     FAL_KEY = st.text_input("fal.ai API Key (⭐엔진2/음성)", type="password")
-    # 💡 브라우저 자동완성 꼬임 방지를 위해 예전 입력칸을 화면에만 복구해 둡니다.
     RENDI_KEY = st.text_input("Rendi API Key (현재 미사용)", type="password") 
 
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 영상 생성", "🎵 음원 제작", "💃 AI 모션", "📑 영상 병합 (자동 자막)"])
 
 with tab1:
-    st.subheader("대량 영상 재료 자동 생성 (오류 해결 완료)")
+    st.subheader("대량 영상 재료 자동 생성 (오류 방어 완료)")
     col1, col2 = st.columns([1, 2])
     with col1:
         video_type = st.radio("영상 포맷", ["쇼츠 (9:16)", "롱폼 (16:9)"])
@@ -248,14 +261,12 @@ with tab1:
                 status_text.markdown(f"**[{current_idx}/{total_items}] '{topic}' 대본 작성 중...**")
                 ai_script = call_groq(f"주제: {topic} ({video_type} 유튜브 쇼츠)", GROQ_KEY)
                 
-                # 💡 [극사실 모션 보장 프롬프트] 사람이 직접 움직이는 것 같은 자연스러움을 강제합니다.
-                eng_prompt = f"Cinematic, ultra-realistic live-action video of a Korean person. {prompt_topic}. The subject is a REAL living human. They MUST exhibit vivid natural human behavior: smooth breathing, natural blinking, changing facial expressions, and continuous fluid body movements. NO static images. High motion, realistic physics."
+                # 💡 [극사실 모션 보장 프롬프트] 사람이 직접 행동하는 듯한 완벽한 묘사 강제!
+                eng_prompt = f"Ultra-realistic cinematic live-action video of a Korean person. {prompt_topic}. The subject is a REAL living human actively moving. They MUST exhibit continuous, natural human behaviors: smooth visible breathing, natural eye blinking, shifting their body weight, and expressive fluid movements. It must look like real camera video footage capturing authentic human actions. Absolutely NO static, frozen, or still images. High motion, lifelike energy."
                 
-                # 엔진 1순위 타격
                 visual_url, kie_err = call_kie_video(eng_prompt, aspect_ratio, ref_image, KIE_KEY, status_text, current_idx, total_items)
                 
                 if not visual_url: 
-                    # 💡 실패 시 진짜 에러 이유를 띄우고 보조 엔진으로 넘어갑니다.
                     status_text.markdown(f"**[{current_idx}/{total_items}] ⚠️ KIE 실패({kie_err}), 초고속 보조 엔진 가동 중... ⏳**")
                     visual_url, fal_err = call_fal_fast_video(eng_prompt, aspect_ratio, ref_image, FAL_KEY, status_text, current_idx, total_items)
                 
